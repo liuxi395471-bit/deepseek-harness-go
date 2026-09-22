@@ -1,0 +1,56 @@
+# dshtest fixtures: 每个 YAML/JSON 文件 = 一个或一组回归测试用例
+#
+# 结构：
+#   cases:
+#     - name: <人类可读名>
+#       input:
+#         prompt: <用户 prompt>
+#         max_rounds: 8                # 可选；不写则取全局默认
+#         stream: true                  # 可选
+#       expect:
+#         stop_reason: no_tool_calls    # 必填
+#         rounds: 1                     # 可选；不写则跳过
+#         tools_called: [greet]         # 可选；不写则跳过
+#         final_content_contains: "..."  # 可选；最终助手消息 content 子串
+#         final_content_equals: "..."   # 可选；与上一条互斥
+#         no_tool_calls: true           # 可选；等价于 len(ToolCalls)==0
+#         events:                       # 可选；strict 顺序匹配 agent.Event 流
+#           - phase_change: init
+#           - phase_change: llm_call
+#           - assistant_message:
+#               content: ""
+#               tool_calls:
+#                 - id: "<any|占位>"
+#                   name: greet
+#                   arguments_contains: "name"
+#           - loop_done:
+#               rounds: 1
+#
+# 简写：events 里用 starts_with/matches 来匹配子串/正则。
+# 严格断言 vs 软断言：单测遇到 stop_reason 不符立即失败；
+# 其他字段（rounds/events）默认软断言，仅在 -strict 时才升级为硬断言。
+
+cases:
+  - name: "greet 工具调通"
+    input:
+      prompt: "请使用 greet 工具向 Ada 打招呼"
+    expect:
+      stop_reason: no_tool_calls
+      tools_called: [greet]
+      final_content_contains: "Ada"
+
+  - name: "无工具调用也能正常返回"
+    input:
+      prompt: "用中文说一句你好就行"
+    expect:
+      stop_reason: no_tool_calls
+      no_tool_calls: true
+      final_content_contains: "你好"
+
+  - name: "multi-turn: greet 后再写一行字"
+    input:
+      prompt: "先向 Bob 问好，然后告诉我今天是星期几（不要工具，纯猜）"
+    expect:
+      stop_reason: no_tool_calls
+      tools_called: [greet]
+      final_content_contains: "Bob"

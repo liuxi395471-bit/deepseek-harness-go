@@ -1,0 +1,19 @@
+# DeepSeek Harness Go 版 — example configuration
+#
+# 复制此文件为 harness.yml 并按需修改。任何敏感凭据（api-key）请通过
+# 环境变量 DEEPSEEK_API_KEY 注入，绝不要写进仓库。
+
+llm:
+  base-url: <your-base-url>            # 例如 http://127.0.0.1:8777/v1
+  api-key: ""                          # ❗ 不写在这里；用 env: DEEPSEEK_API_KEY
+  model: <your-model>                  # 例如 glm-5.3-flash / deepseek-chat / gpt-4o-mini
+  max-tokens: 8192
+  timeout: 120s                        # 单次 LLM 调用超时
+
+agent:
+  max-rounds: 16                       # 单 turn ReAct 上限；超过则终止当前轮
+  workspace: ./.dsh/workspace          # 启动时自动创建；fs_read/fs_write 锁在此目录内
+  temperature: 0.2                     # 留空或不写则不发送 temperature 字段
+  system-prompt: |                     # 可选；留空使用内置模板
+    你是 dsh，一个简洁可靠的 CLI 助手。
+  debug: false                         # true 时打印所有 agent 事件到 stderr

@@ -1,0 +1,63 @@
+// DeepSeek Harness Go plugin protocol (DESIGN-v2 §B.2).
+//
+// A plugin is an external process speaking this gRPC contract on
+// localhost. The host (dsh main) launches the plugin, calls Specs() to
+// enumerate tools, and forwards tool_calls from the LLM to Execute().
+//
+// Wire: gRPC over plaintext HTTP/2 on a TCP socket assigned by the host
+// and passed to the plugin via DSH_PLUGIN_ADDR env var.
+//
+// Versioning: this proto lives at v1. Breaking changes require a new
+// service (e.g. ToolProviderV2) per Go gRPC convention.
+
+syntax = "proto3";
+
+package dsh.plugin.v1;
+
+option go_package = "deepseek-harness-go/internal/plugin/proto;pluginpb";
+
+// Empty message reused by RPCs that take no arguments.
+message Empty {}
+
+// ToolSpec describes a single tool exposed by the plugin.
+message ToolSpec {
+  string name        = 1;
+  string description = 2;
+  // JSON Schema object (raw bytes — we don't parse on the wire).
+  bytes  parameters  = 3;
+  string version     = 4;
+  // Plugin author hint: when false, host skips Approval pre-check.
+  // Host still applies any configured allowlist.
+  bool   requires_approval = 5;
+}
+
+// ToolList is the response payload for Specs.
+message ToolList {
+  repeated ToolSpec specs = 1;
+}
+
+// ExecuteRequest asks the plugin to invoke one tool with JSON args.
+message ExecuteRequest {
+  string name      = 1;
+  bytes  args_json = 2;
+  // call_id is opaque to the plugin; the host uses it to correlate the
+  // response back to the originating tool call. The plugin may echo
+  // it for logging.
+  string call_id   = 3;
+}
+
+// ExecuteResponse carries the tool's outcome.
+message ExecuteResponse {
+  // The result content (string form). For structured output, the plugin
+  // is responsible for JSON-encoding it.
+  string content = 1;
+  bool   is_error = 2;
+  // Optional metadata (timing, side effects). Plugin-defined.
+  map<string, string> meta = 3;
+}
+
+// ToolProvider is the contract every plugin must implement.
+service ToolProvider {
+  rpc Specs(Empty) returns (ToolList);
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+}

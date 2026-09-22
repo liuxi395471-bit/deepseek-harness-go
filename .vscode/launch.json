@@ -1,0 +1,79 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "dsh: 调试 main（单次 prompt）",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/deepseek-harness-go/cmd/dsh/main.go",
+      "cwd": "${workspaceFolder}/deepseek-harness-go",
+      "env": {
+        "DSH_API_KEY": "${env:DSH_API_KEY}",
+        "DSH_BASE_URL": "${env:DSH_BASE_URL}",
+        "DSH_MODEL": "${env:DSH_MODEL}",
+        "DSH_WORKSPACE_ROOT": "${workspaceFolder}/deepseek-harness-go/.dsh-debug-workspace"
+      },
+      "args": [
+        "-config=harness.yml",
+        "-prompt=你好",
+        "-debug"
+      ]
+    },
+    {
+      "name": "dsh: 调试 main（交互 REPL）",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/deepseek-harness-go/cmd/dsh/main.go",
+      "cwd": "${workspaceFolder}/deepseek-harness-go",
+      "env": {
+        "DSH_API_KEY": "${env:DSH_API_KEY}",
+        "DSH_BASE_URL": "${env:DSH_BASE_URL}",
+        "DSH_MODEL": "${env:DSH_MODEL}"
+      },
+      "args": [
+        "-config=harness.yml",
+        "-debug"
+      ],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "dsh: 调试 server 模式",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/deepseek-harness-go/cmd/dsh/main.go",
+      "cwd": "${workspaceFolder}/deepseek-harness-go",
+      "env": {
+        "DSH_API_KEY": "${env:DSH_API_KEY}",
+        "DSH_BASE_URL": "${env:DSH_BASE_URL}",
+        "DSH_MODEL": "${env:DSH_MODEL}"
+      },
+      "args": [
+        "-config=harness.yml",
+        "-serve",
+        "-debug"
+      ],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "调试 runner.go: loop 进入",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/deepseek-harness-go/cmd/dsh/main.go",
+      "cwd": "${workspaceFolder}/deepseek-harness-go",
+      "env": {
+        "DSH_API_KEY": "${env:DSH_API_KEY}",
+        "DSH_BASE_URL": "${env:DSH_BASE_URL}",
+        "DSH_MODEL": "${env:DSH_MODEL}"
+      },
+      "args": [
+        "-config=harness.yml",
+        "-prompt=你好，请用 greet 工具向 Ada 打招呼",
+        "-debug"
+      ]
+    }
+  ]
+}

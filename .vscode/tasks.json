@@ -1,0 +1,33 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build: dsh",
+      "type": "shell",
+      "command": "cd deepseek-harness-go && go build -o dsh.exe ./cmd/dsh",
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "build: dshtest",
+      "type": "shell",
+      "command": "cd deepseek-harness-go && go build -o dshtest.exe ./cmd/dshtest",
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "test: all",
+      "type": "shell",
+      "command": "cd deepseek-harness-go && go test ./...",
+      "problemMatcher": [],
+      "group": "test"
+    },
+    {
+      "label": "build: dsh + dshtest",
+      "type": "shell",
+      "command": "cd deepseek-harness-go && go build -o dsh.exe ./cmd/dsh && go build -o dshtest.exe ./cmd/dshtest",
+      "problemMatcher": [],
+      "group": "build"
+    }
+  ]
+}

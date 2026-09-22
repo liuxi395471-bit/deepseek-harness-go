@@ -1,0 +1,22 @@
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Local config with secrets
+harness.yml
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local workspace (created at runtime)
+.dsh/
+.dshdbg-workspace/
+.dshtest-workspace/
+.dsh-debug-workspace/
