@@ -8,7 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"deepseek-harness-go/internal/audit"
+	"deepseek-harness-go/internal/compaction"
 	"deepseek-harness-go/internal/llm"
+	"deepseek-harness-go/internal/obs"
+	"deepseek-harness-go/internal/skill"
 	"deepseek-harness-go/internal/store"
 	"deepseek-harness-go/internal/tool"
 )
@@ -85,6 +89,25 @@ type LoopRunner struct {
 
 	Store store.Store // v2: optional. When nil, no persistence.
 
+	// ---- v3 可选接入点（零值 = 关闭，行为与 v2 一致）----
+
+	// Skills 是候选 skill 集合（§A.4）。每轮用户 prompt 到达时经
+	// Matcher 匹配，命中的 body 注入 system prompt。
+	Skills []skill.Skill
+	// Matcher 决定触发逻辑；nil 时用 skill.KeywordMatcher。
+	Matcher skill.Matcher
+	// Compactor 非 nil 时在每轮 LLM 调用前检查上下文长度（§D）。
+	Compactor *compaction.Compactor
+	// Audit 非 nil 时记录 tool_call / llm_call 事件（§E）。
+	Audit audit.Logger
+	// Obs 注入可观测实现（§C）；零值 = 全 no-op。
+	Obs obs.Provider
+
+	// baseSystem 在 run() 启动时被快照 System.Build(Registry) 的结果，
+	// 用于每次重注入 skill 前重置 msgs[0].Content，保证 skill body
+	// 不会因反复 inject 而累积（§A.4：loop 每轮都应重新评估）。
+	baseSystem string
+
 	bufSize int
 }
 
@@ -150,6 +173,20 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 	rounds := 0
 	var totalUsage llm.Usage
 
+	// v3 §C.3：整个 run 包在 "agent.run" span 中。
+	runCtx, runSpan := r.Obs.T().Start(ctx, "agent.run")
+	runSpan.SetAttr("agent.model", r.Model)
+	runSpan.SetAttr("agent.stream", stream)
+	ctx = runCtx
+	defer func() {
+		runSpan.SetAttr("agent.rounds", rounds)
+		runSpan.SetAttr("agent.stop_reason", stopReason)
+		if stopErr != nil {
+			runSpan.RecordError(stopErr)
+		}
+		runSpan.End()
+	}()
+
 	// 外层 defer：捕获循环体执行过程中的任何 panic，将其归类为
 	// 致命错误，然后进入下方的关闭序列。
 	defer func() {
@@ -212,12 +249,24 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 		}
 	}
 
+	// 记录 baseSystem：每轮 skill 注入前会用此值重置 msgs[0].Content，
+	// 防止前一轮注入的 body 残留与新一轮叠加（§A.4）。
+	// 恢复模式下 store 里的 system 与当前 Registry 推导的 base 不一定
+	// 一致（工具注册表可能变化），用 base 覆盖保证语义统一。
+	r.baseSystem = r.System.Build(r.Registry)
+	if len(msgs) > 0 && msgs[0].Role == llm.RoleSystem {
+		msgs[0].Content = r.baseSystem
+	}
+
 	// 追加用户 prompt，除非是恢复模式（恢复时没有新 prompt ——
 // 会话由其他途径延续；服务端通常会在调用 RunStream 前通过 Store.Append
 	// 注入一条用户消息）。
 	if prompt != "" {
 		userMsg := llm.Message{Role: llm.RoleUser, Content: prompt}
 		msgs = append(msgs, userMsg)
+		// v3 §A.4：skill 注入。命中的 body 拼接到 system prompt 尾部。
+		// 只改内存副本，不回写 Store——注入是运行时行为。
+		r.injectSkills(msgs, prompt)
 		if r.Store != nil && sid != "" {
 			if err := r.Store.Append(ctx, sid, userMsg); err != nil {
 				stopReason = "error"
@@ -254,6 +303,27 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 		case out <- PhaseChange{Phase: PhaseLLMCall, At: time.Now()}:
 		}
 
+		// v3 §D：每轮 LLM 调用前检查上下文长度；超阈值则压缩。
+		// 压缩结果只影响发送给 LLM 的消息序列，Store 不动。
+		if r.Compactor != nil {
+			compacted, did, cerr := r.Compactor.Maybe(ctx, msgs)
+			if cerr != nil {
+				r.Obs.L().Warn(ctx, "compaction failed", obs.A("err", cerr.Error()))
+			}
+			if did {
+				out <- Compacted{Before: len(msgs), After: len(compacted)}
+				r.Obs.L().Info(ctx, "context compacted",
+					obs.A("before", len(msgs)), obs.A("after", len(compacted)))
+				msgs = compacted
+			}
+		}
+
+		// v3 §A.4：每轮按当前 user prompt 重新评估 skill 注入。
+		// injectSkills 内部会用 r.baseSystem 重置 msgs[0]，避免累积。
+		if lastPrompt := lastUserContent(msgs); lastPrompt != "" {
+			r.injectSkills(msgs, lastPrompt)
+		}
+
 		assistant, usage, done, err := r.doOneRound(ctx, msgs, out, stream)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -279,6 +349,14 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 		totalUsage.PromptTokens += usage.PromptTokens
 		totalUsage.CompletionTokens += usage.CompletionTokens
 		totalUsage.TotalTokens += usage.TotalTokens
+		// v3 §E：llm_call 审计 + §C.3 span 属性。
+		r.auditLog(ctx, audit.Event{
+			SessionID:        sid,
+			Event:            audit.EventLLMCall,
+			Model:            r.Model,
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+		})
 		if r.Store != nil && sid != "" {
 			_ = r.Store.UpdateUsage(ctx, sid, usage)
 		}
@@ -327,12 +405,29 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 			}
 
 			start := time.Now()
-			result, execErr := safeExecute(t, ctx, raw)
+			toolCtx, toolSpan := r.Obs.T().Start(ctx, "tool.execute")
+			toolSpan.SetAttr("tool.name", tc.Function.Name)
+			// v3 §E：tool_call 审计。FileLogger 按 redact 配置决定
+			// 保留 hash 还是原文。
+			r.auditLog(ctx, audit.Event{
+				SessionID: sid,
+				Event:     audit.EventToolCall,
+				Round:     rounds,
+				Tool:      tc.Function.Name,
+				ArgsHash:  audit.HashArgs(raw),
+				ArgsRaw:   string(raw),
+			})
+			result, execErr := safeExecute(t, toolCtx, raw)
 			if execErr != nil {
 				// safeExecute 只在工具 panic 时返回非 nil；
 				// 我们附加 [ERROR] 前缀，确保语义明确。
 				result = tool.Err(execErr.Error())
+				toolSpan.RecordError(execErr)
 			}
+			if result.IsError {
+				toolSpan.RecordError(errors.New(result.Content))
+			}
+			toolSpan.End()
 			took := time.Since(start)
 
 			if result.IsError && !strings.HasPrefix(result.Content, "[ERROR] ") {
@@ -370,8 +465,23 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 // （调用方应将其归类为致命错误）。
 // 第二个返回值是本轮模型上报的 Usage（后端未上报时为零值）。
 //
+// v3 §C.3：整轮调用包在 "llm.chat" span 中，结束前记录 model 与
+// token 属性。
+//
 // 并发性：必须与 run() 在同一 goroutine 中执行（它会写 out）。
 func (r *LoopRunner) doOneRound(ctx context.Context, msgs []llm.Message, out chan<- Event, stream bool) (assistant llm.Message, usage llm.Usage, done bool, err error) {
+	spanCtx, span := r.Obs.T().Start(ctx, "llm.chat")
+	span.SetAttr("llm.model", r.Model)
+	span.SetAttr("llm.messages", len(msgs))
+	defer func() {
+		span.SetAttr("llm.prompt_tokens", usage.PromptTokens)
+		span.SetAttr("llm.completion_tokens", usage.CompletionTokens)
+		if err != nil {
+			span.RecordError(err)
+		}
+		span.End()
+	}()
+	ctx = spanCtx
 	req := llm.ChatRequest{
 		Model:       r.Model,
 		Messages:    msgs,
@@ -491,4 +601,49 @@ func safeExecute(t tool.Tool, ctx context.Context, args json.RawMessage) (result
 		}
 	}()
 	return t.Execute(ctx, args)
+}
+
+// injectSkills 按 §A.4 把命中的 skill body 注入 msgs[0]（system）。
+// msgs 为空或首条不是 system 时静默跳过。
+//
+// 行为约定：每次注入前先把 msgs[0].Content 重置为 r.baseSystem
+// （run() 启动时快照），避免前一轮注入的 skill body 残留在 system 里
+// 与新一轮命中叠加。这样保证 loop 每轮按当前 user prompt 重新评估
+// 触发，命中的 skill body 永远反映"最近一轮"的语义。
+func (r *LoopRunner) injectSkills(msgs []llm.Message, prompt string) {
+	if len(r.Skills) == 0 || len(msgs) == 0 || msgs[0].Role != llm.RoleSystem {
+		return
+	}
+	// 还原 base（防止多轮累积）。
+	msgs[0].Content = r.baseSystem
+	matcher := r.Matcher
+	if matcher == nil {
+		matcher = skill.KeywordMatcher{}
+	}
+	matched := matcher.Match(r.Skills, prompt)
+	if len(matched) == 0 {
+		return
+	}
+	msgs[0].Content = skill.Inject(msgs[0].Content, matched)
+}
+
+// auditLog 在 Audit 非 nil 时写入事件；失败被忽略（审计不应拖垮
+// 主流程）。Audit 为 nil 时是零开销 no-op。
+func (r *LoopRunner) auditLog(ctx context.Context, ev audit.Event) {
+	if r.Audit == nil {
+		return
+	}
+	r.Audit.Log(ctx, ev)
+}
+
+// lastUserContent 返回 msgs 中最后一条 role=user 的 Content。
+// 用于每轮 skill 注入时拿到"当前用户意图"作为触发依据。
+// msgs 为空或无 user 消息时返回 ""（调用方应跳过注入）。
+func lastUserContent(msgs []llm.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == llm.RoleUser {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }

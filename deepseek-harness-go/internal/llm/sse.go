@@ -2,8 +2,12 @@ package llm
 
 // sseFrame 表示一个已解码的 SSE data 行。StreamChunk 是调用方
 // 消费的已解码输出；本类型为内部类型。
+//
+// err 非 nil 时表示扫描器或读取器出现不可恢复错误（如单行超过
+// scanner.Buffer 上限），调用方应将其视为致命流错误。
 type sseFrame struct {
 	parsed SSEFrame
+	err    error
 }
 
 // Chunk 返回指定 choice 下标对应的已解码 StreamChunk。

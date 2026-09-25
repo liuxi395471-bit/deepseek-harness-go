@@ -1,11 +1,13 @@
 package llm
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -265,3 +267,117 @@ func TestChatStream_OpenAITextHappyPath(t *testing.T) {
 		}
 	}
 }
+
+// 多行 SSE data：data: 行跨多个，之间由空行分隔为独立事件。
+// 与单行不同，多行 data 在 SSE 协议里是合法的（事件由多行 data:
+// 组成，行间用 \n 拼接）；但 JSON 解码层只接受完整 JSON。本测试
+// 验证 sseFeed 不会把第二条 data 行静默丢弃。
+func TestChatStream_MultilineData(t *testing.T) {
+	// 两个独立事件，每个事件单行 data:。这是 OpenAI/DeepSeek
+	// 实际格式；测试目的是回归保护"扫描器读到下一个 data 时能继续"。
+	frames := []string{
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n",
+		"data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\n",
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, f := range frames {
+			_, _ = io.WriteString(w, f)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := NewOpenAICompatibleClient(srv.URL, "")
+	ch, errCh := c.ChatStream(context.Background(), ChatRequest{Model: "m", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	var got []string
+	for chunk := range ch {
+		got = append(got, chunk.Text)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("errCh: %v", err)
+	}
+	if len(got) != 2 || got[0] != "Hi" || got[1] != "" {
+		t.Fatalf("got %#v, want [\"Hi\", \"\"]", got)
+	}
+}
+
+// 单行 SSE data 中包含转义换行符（合法 JSON 字符串里嵌入 \n）。
+// 验证 sseFeed 不会把字面 \n 当作多行分隔。
+func TestChatStream_DataWithEscapedNewline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		// data 中 Content 字段包含 \n（两字符转义）。原实现若误把它
+		// 当作多行分隔，会破坏 JSON 解析。
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\\nb\"}}]}\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	c := NewOpenAICompatibleClient(srv.URL, "")
+	ch, errCh := c.ChatStream(context.Background(), ChatRequest{Model: "m", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+
+	var got []string
+	for chunk := range ch {
+		got = append(got, chunk.Text)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("errCh: %v", err)
+	}
+	if len(got) != 1 || got[0] != "a\nb" {
+		t.Fatalf("got %#v, want [\"a\\nb\"]", got)
+	}
+}
+
+// 单行超过 scanner buffer 上限时 scanner.Err 须被透传为流错误，
+// 而不是静默吞掉。之前实现直接 close(ch)，客户端以为流正常 EOF。
+func TestChatStream_LineTooLongIsFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// 写出 2MB 单行（>1MB scanner 上限）
+		huge := strings.Repeat("x", 2*1024*1024)
+		_, _ = io.WriteString(w, "data: "+huge+"\n\n")
+	}))
+	defer srv.Close()
+
+	c := NewOpenAICompatibleClient(srv.URL, "")
+	ch, errCh := c.ChatStream(context.Background(), ChatRequest{Model: "m", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+
+	for range ch {
+	}
+	err := <-errCh
+	if err == nil {
+		t.Fatalf("expected scanner overflow error, got nil")
+	}
+	if !strings.Contains(err.Error(), "scan") {
+		t.Fatalf("expected scanner-derived error, got %v", err)
+	}
+}
+
+// sanity：bufio.Scanner 默认 buffer 是 64KB 起始；构造 100KB 单行
+// 仍能正常解析（向上扩）。
+func TestSSEFeed_LongSingleLineOK(t *testing.T) {
+	long := strings.Repeat("y", 100*1024)
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"" + long + "\"}}]}\n\n"
+	ch := sseFeed(context.Background(), strings.NewReader(body))
+	frames := 0
+	for f := range ch {
+		if f.err != nil {
+			t.Fatalf("unexpected err: %v", f.err)
+		}
+		frames++
+		if f.parsed.Choices[0].Delta.Content != long {
+			t.Fatalf("content mismatch")
+		}
+	}
+	if frames != 1 {
+		t.Fatalf("want 1 frame, got %d", frames)
+	}
+}
+
+// verify that bufio.Scanner import still works after edits
+var _ = bufio.NewScanner

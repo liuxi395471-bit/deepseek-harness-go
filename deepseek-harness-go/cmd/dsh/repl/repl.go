@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"deepseek-harness-go/internal/agent"
+	"deepseek-harness-go/internal/skill"
 )
 
 // Runner 是 cmd/dsh 中 Run 所依赖的契约。它打包了 v1 的 Runner 方法
@@ -69,6 +70,8 @@ type Options struct {
 	Loader   SessionLoader
 	// OnSessionSwitch 让 runner 得知新的会话 id。
 	OnSessionSwitch func(newSID string)
+	// Skills 是已加载的 skill 列表（DESIGN-v3 §A）；/skills 命令展示。
+	Skills []skill.Skill
 }
 
 // Run 运行交互式 REPL，直到遇到 EOF 或输入 "exit"/"quit"。
@@ -172,8 +175,30 @@ func handleSlashCommand(ctx context.Context, line string, opts Options, state *R
 		return true
 	case "/history":
 		return handleHistory(ctx, parts, opts, state)
+	case "/skills":
+		printSkills(opts.Skills)
+		return true
 	default:
 		return false
+	}
+}
+
+// printSkills 输出已加载的 skill 清单（§H 验收 demo）。
+func printSkills(skills []skill.Skill) {
+	if len(skills) == 0 {
+		fmt.Fprintln(os.Stderr, "[dsh] no skills loaded (put *.md under ~/.dsh/skills or set skills.dir)")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[dsh] %d skills loaded:\n", len(skills))
+	for _, s := range skills {
+		kind := "mention"
+		switch {
+		case s.Always:
+			kind = "always"
+		case s.Trigger != "":
+			kind = "mention:" + s.Trigger
+		}
+		fmt.Fprintf(os.Stderr, "  %-16s %-14s %s\n", s.Name, kind, s.Description)
 	}
 }
 
@@ -215,6 +240,7 @@ func printHelp() {
 	fmt.Fprintln(os.Stderr, "  /usage                 print accumulated usage")
 	fmt.Fprintln(os.Stderr, "  /sessions              list persisted sessions")
 	fmt.Fprintln(os.Stderr, "  /history [N|<sid>]     show history (or switch session)")
+	fmt.Fprintln(os.Stderr, "  /skills                list loaded skills (DESIGN-v3 §A)")
 }
 
 // RunOnce 运行单条 prompt（-prompt 模式使用）后退出。

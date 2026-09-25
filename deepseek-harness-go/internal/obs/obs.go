@@ -1,32 +1,94 @@
-// Package obs 是 v2 的统一可观测性接缝。所有 I/O 路径（HTTP、SSE、
-// SQL、工具执行）都经由本包，以便调用方日后替换日志实现时无需改动
-// 调用点。
+// Package obs 是 harness 的统一可观测性接缝（DESIGN-v3 §C）。
 //
-// 默认实现是 no-op，既保留 v1 行为，又保持零依赖（DESIGN-v2 §0.1 P7）。
-//
-// 状态：v2 横切骨架。
+// v3 将 v2 的 no-op Logger 升级为完整的 Logger / Tracer / Span / Meter
+// 接口族；默认实现全部为 no-op，零外部依赖。当配置 obs.provider=otel
+// 时（§C.2），由 otel.go 提供 OTel SDK 实现（opt-in）。
 package obs
 
-// Logger 是调用方可使用的最小接口。实现包括：
-//
-//   - NoopLogger（默认，此处）：丢弃所有事件
-//   - StderrLogger（T8 及之后）：向 stderr 写入类 JSON 行
-//
-// TODO：在后续里程碑中拆分为 Logger / Hook / Span。
-type Logger interface {
-	Debug(msg string, kv ...any)
-	Info(msg string, kv ...any)
-	Warn(msg string, kv ...any)
-	Error(msg string, kv ...any)
+import "context"
+
+// Attr 是结构化属性的键值对。
+type Attr struct {
+	Key   string
+	Value any
 }
 
-// Noop 是默认日志器；当 harness debug=true（v1 开关）或通过环境变量
-// DSH_LOG=stderr（v2）时，在启动阶段替换为真正的实现。
-var Noop Logger = noopLogger{}
+// A 是 Attr 的便捷构造函数。
+func A(key string, val any) Attr { return Attr{Key: key, Value: val} }
 
-type noopLogger struct{}
+// Logger 是调用方可使用的最小日志接口。
+type Logger interface {
+	Debug(ctx context.Context, msg string, attrs ...Attr)
+	Info(ctx context.Context, msg string, attrs ...Attr)
+	Warn(ctx context.Context, msg string, attrs ...Attr)
+	Error(ctx context.Context, msg string, attrs ...Attr)
+}
 
-func (noopLogger) Debug(string, ...any) {}
-func (noopLogger) Info(string, ...any)  {}
-func (noopLogger) Warn(string, ...any)  {}
-func (noopLogger) Error(string, ...any) {}
+// Tracer 创建 Span。
+type Tracer interface {
+	Start(ctx context.Context, name string) (context.Context, Span)
+}
+
+// Span 是一次可观测的操作区间。
+type Span interface {
+	End()
+	SetAttr(key string, val any)
+	RecordError(err error)
+}
+
+// Meter 是指标工厂（§C.1）。
+type Meter interface {
+	Counter(name string) Counter
+	Histogram(name string) Histogram
+}
+
+// Counter 是单调递增计数器。
+type Counter interface {
+	Add(ctx context.Context, delta int64, attrs ...Attr)
+}
+
+// Histogram 是数值分布。
+type Histogram interface {
+	Record(ctx context.Context, value float64, attrs ...Attr)
+}
+
+// Provider 聚合三类可观测原语，供 Runner / 工具 / 客户端注入。
+// 零值安全：通过 L/T/M 访问器取用，未注入的字段返回 no-op。
+type Provider struct {
+	Logger Logger
+	Tracer Tracer
+	Meter  Meter
+}
+
+// L 返回 Logger；未注入时返回 no-op。
+func (p Provider) L() Logger {
+	if p.Logger == nil {
+		return NoopLogger{}
+	}
+	return p.Logger
+}
+
+// T 返回 Tracer；未注入时返回 no-op。
+func (p Provider) T() Tracer {
+	if p.Tracer == nil {
+		return NoopTracer{}
+	}
+	return p.Tracer
+}
+
+// M 返回 Meter；未注入时返回 no-op。
+func (p Provider) M() Meter {
+	if p.Meter == nil {
+		return NoopMeter{}
+	}
+	return p.Meter
+}
+
+// Defaults 返回全 no-op 的 Provider。
+func Defaults() Provider {
+	return Provider{
+		Logger: NoopLogger{},
+		Tracer: NoopTracer{},
+		Meter:  NoopMeter{},
+	}
+}

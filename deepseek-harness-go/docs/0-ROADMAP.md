@@ -26,7 +26,7 @@
 
 ---
 
-## ✅ 完成状态总览（截至 2026-09-20 02:38）
+## ✅ 完成状态总览（截至 2026-09-26 01:40）
 
 ### 阶段状态
 
@@ -35,9 +35,9 @@
 | **P0** | 现状冻结 | 0.5d | ✅ 完成（v2.0.2 已收官） | — | — | ✅ | ✅ | 见 [RELEASE-v2.md](./RELEASE-v2.md) |
 | **P1** | 事件溯源 | 3d | ☐ 待启动 | ☐ | ☐ | ☐ | ☐ | 下一步开工 |
 | **P2** | Gateway SSE | 2d | ☐ 待启动 | ☐ | ☐ | ☐ | ☐ | 依赖 P1 |
-| **P3** | Obs + Audit | 2.5d | ☐ 待启动 | ☐ | ☐ | ☐ | ☐ | 依赖 P2 |
-| **P4** | Compaction + 多渠道 | 4d | ☐ 待启动 | ☐ | ☐ | ☐ | ☐ | 依赖 P3 |
-| **P5** | Sub-agent + 用例库 + 收尾 | 3d | ☐ 待启动 | ☐ | ☐ | ☐ | ☐ | 依赖 P4 |
+| **P3** | 插件库存视图 | 1.5d | ☐ 待启动 | ☐ | ☐ | ☐ | ☐ | 依赖 P2 |
+| **P4** | 用例库 + 收尾 | 2d | ☐ 待启动 | ☐ | ☐ | ☐ | ☐ | 依赖 P3 |
+| **v3 并行** | Skill+Subagent+Obs+Audit+Compaction+Ollama+Gemini | — | ✅ 完成 | — | [RELEASE-v3.md](./RELEASE-v3.md) | ✅ | ✅ | 与 P1-P4 并行；见 RELEASE-v3 验收矩阵 |
 
 ### P0 已完成项明细（v2.0.2 历史）
 
@@ -95,28 +95,27 @@
 | 上下文管理 | 无压缩 | truncate + llm-summary |
 | 测试体系 | 单测 + 集成 | + `test-cases.md` 用例库 |
 
-### §1.3 阶段划分（共 6 个阶段，约 6 周）
+### §1.3 阶段划分（共 5 个阶段，约 8.5 天）
 
 | 阶段 | 主题 | 工时 | 状态 | 关键交付物 |
 |---|---|---|---|---|
 | **P0 现状冻结** | 把 v2.0.2 锁为基线 | 0.5 天 | ✅ 完成 | v2.0.2 tag + branch |
+| **v3 并行** | Skill+Sub-agent+Obs+Audit+Compaction+Ollama+Gemini | — | ✅ 完成 | 7 大模块（见 [RELEASE-v3.md](./RELEASE-v3.md)） |
 | **P1 事件溯源** | Session 事件流 + 投影缓存 | 3 天 | ☐ 待启动 | `internal/store/event.go` + 投影 + 测试 |
 | **P2 统一 Gateway SSE** | 5 端点收敛 | 2 天 | ☐ 待启动 | `internal/server/gateway.go` + 路由 |
-| **P3 可观测性 + 审计** | OTel + Audit log | 2.5 天 | ☐ 待启动 | `internal/obs/otel.go` + `internal/audit/` |
-| **P4 上下文压缩 + 多渠道** | Compaction + Ollama + Gemini | 4 天 | ☐ 待启动 | `internal/compaction/` + 多渠道 |
-| **P5 子代理 + 用例库 + 收尾** | Sub-agent + 用例库 + v4 tag | 3 天 | ☐ 待启动 | `internal/subagent/` + `test-cases.md` + RELEASE-v4 |
-| **合计** | | **~15 天**（一人） | | |
+| **P3 插件库存视图** | Tool/Plugin 可视化 | 1.5 天 | ☐ 待启动 | `internal/plugin/view.go` + HTTP 端点 |
+| **P4 用例库 + 收尾** | test-cases.md + v4 tag | 2 天 | ☐ 待启动 | `test-cases.md` + `RELEASE-v4.md` + git tag |
+| **合计** | | **~8.5 天**（一人） | | |
 
 ### §1.4 时间线图
 
 ```
-Week 1     Week 2     Week 3     Week 4     Week 5     Week 6
- │          │          │          │          │          │
- ▼          ▼          ▼          ▼          ▼          ▼
- P0 ✅ P1─────┤ P2 ├──────┤ P3 ├──────┤ P4 ├──────┤ P5 │
- baseline   events+sse obs+audit  compact    sub-agent
-                       +otel      +ollama    +testcases
-                                  +gemini    +v4 tag
+Week 1     Week 2     Week 3
+ │          │          │
+ ▼          ▼          ▼
+ P0 ✅ P1──────────────┤ P2 ├────┤ P3 ├────┤ P4 │
+ baseline   events+sse   gateway  plugin   testcases
+                                     +v4 tag
 ```
 
 每阶段内部不重叠；阶段之间允许 1 天 buffer 用于回归 + release note。
@@ -127,29 +126,27 @@ Week 1     Week 2     Week 3     Week 4     Week 5     Week 6
 
 ```text
 P0 (baseline) ✅ ── 必先后置
+   │
+  v3 并行 ✅（Skill+Subagent+Obs+Audit+Compaction+Ollama+Gemini）
+   │
+   ▼
+P1 (事件溯源) ☐
   │
   ▼
-P1 (事件溯源) ☐ ──────────┐
-  │                    │
-  ▼                    │
-P2 (Gateway SSE) ☐ ──┐   │
-  │                │   │
-  ▼                ▼   │
-P3 (Obs+Audit) ☐ ────┐   │
-  │                │   │
-  ▼                ▼   ▼
-P4 (Compaction + 多渠道) ☐  ←── 依赖 P3（hook 点）
+P2 (Gateway SSE) ☐ ──┐
+  │                │
+  ▼                │
+P3 (插件库存视图) ☐──┘
   │
   ▼
-P5 (Sub-agent + 用例库 + 收尾) ☐ ←── 依赖 P1（事件流用于子代理事件）
+P4 (用例库 + 收尾) ☐
 ```
 
 **关键约束**：
 
 - **P1 → P2**：Gateway SSE 的事件类型需要 P1 的 event 流（避免重复定义）
-- **P3 → P4**：Compaction 触发需要 hook 到 OTel span
-- **P1 → P5**：Sub-agent 通过事件流汇总子代理输出
-- **P0 → 其余**：必须先把 v2.0.2 tag 锁为不可变基线（✅ 已完成）
+- **P2 → P3**：插件库存视图需要 Gateway 作为 HTTP 基础
+- **P3 → P4**：用例库涵盖所有已实现模块
 
 ---
 
@@ -320,200 +317,113 @@ P5 (Sub-agent + 用例库 + 收尾) ☐ ←── 依赖 P1（事件流用于子
 
 ---
 
-### P3 — 可观测性 + 审计日志 ☐
+### P3 — 插件库存视图 ☐
 
 **状态**：☐ 待启动（依赖 P2）
 
-**目标**：引入 OTel opt-in 实现 + JSONL audit log。
+**目标**：通过 Gateway SSE 暴露 `/api/plugins` 与 `/api/tools`，返回注册表与 gRPC 插件的完整清单（名称 / 来源 / 来源主机 / 参数 schema / 权限 / 健康状态），供运维与 LLM 自发现用。
 
-**启动时**：新建 `docs/PHASE-3-PLAN.md`，含实施步骤；按需新建 `docs/PHASE-3-DESIGN.md` 做详细设计。
+**启动时**：新建 `docs/PHASE-3-PLAN.md`，含实施步骤。
 
 **完成判定（本阶段全部 ✅ 才能进入 P4）**：
 
 - ☐ `docs/PHASE-3-PLAN.md` 创建
-- ☐ `internal/obs/otel.go` 创建（OTel 真实现）
-- ☐ `internal/audit/log.go` 创建
-- ☐ 3 个 hook 点接入（runner / client / tool）
-- ☐ 7 个验收用例全部通过（4 obs + 3 audit）
-- ☐ `go.mod` 加 otel 依赖
+- ☐ `internal/plugin/view.go` 实现（聚合本地 reg + gRPC plugin hosts）
+- ☐ Gateway SSE source `plugins.list` 与 `tools.list` 注册
+- ☐ 3 个验收用例全部通过
+- ☐ `go test -cover ./internal/plugin/...` ≥ 80%
 
 **不做（本阶段）**：
 
-- OTel metrics（先 trace）
-- Audit log 远程发送（先本地文件）
-- 集成 Prometheus / Grafana
+- 插件热加载（v5+）
+- 远程插件市场（v5+）
+- 插件配置回写（v5+）
 
 **参考（仅引用，详细设计在 PHASE-3-DESIGN）**：
 
-- `../deepseek-harness/packages/obs/` — Node 版 OTel 实现
-- `../deepseek-harness/packages/obs/noop.ts` + `../deepseek-harness/packages/obs/otel.ts` — 实现参考
-- `../deepseek-harness/docs/development.md` — Node 版 obs 配置
-- `../deepseek-harness-java/docs/md/runtime-diagnostics/` — Java 版启动诊断（不是 OTel，但借鉴"分级日志"思路）
+- `../deepseek-harness-java/deepseek-harness-java-domain/src/main/java/cn/xiaofuge/deepseek/harness/domain/plugin/view/` — Java 版 plugin view 接口签名
+- `../deepseek-harness/packages/plugin/plugin-registry/` — Node 版 plugin registry
 
 **子 TODO 索引**（在 PHASE-3-PLAN 内展开）：
 
-- T3.1 `internal/obs/obs.go`：接口（保持 v3 草案）
-- T3.2 `internal/obs/noop.go`：默认实现
-- T3.3 `internal/obs/otel.go`：OTel 实现（OTLP gRPC exporter）
-- T3.4 `internal/obs/hook.go`：hook 点封装
-- T3.5 `internal/agent/runner.go`：runner.Run 包 span
-- T3.6 `internal/llm/client.go`：client.Chat/ChatStream 包 span
-- T3.7 `internal/tool/tool.go`：tool.Execute 包 span
-- T3.8 `internal/audit/event.go`：Event schema + redact
-- T3.9 `internal/audit/log.go`：FileLogger
-- T3.10 `internal/audit/redact.go`：SHA-256 脱敏
-- T3.11 CLI flag `--audit` 与 `--audit-full`
-- T3.12 7 个验收用例
+- T3.1 `internal/plugin/view.go`：PluginView 接口 + LocalPluginView 实现
+- T3.2 `internal/plugin/grpc_view.go`：聚合 gRPC plugin hosts 的元数据
+- T3.3 `internal/server/gateway.go`：注册 `plugins.list` 与 `tools.list` 两个 SSE source
+- T3.4 3 个验收用例
 
-**工时**：2.5 天
+**工时**：1.5 天
 
 **验收**：
 
 - `PHASE-3-PLAN.md` 完成
-- `go test ./internal/obs/... ./internal/audit/...` 全绿
-- 端到端：`obs.provider=otel` 时向 OTLP collector 发 trace
-- 端到端：`--audit /tmp/audit.jsonl` 触发 tool_call → 文件含对应行
+- `go test ./internal/plugin/...` 全绿
+- 端到端：`curl -N http://127.0.0.1:8080/api/gateway/stream -d '{"source":"plugins.list"}'` 看到插件清单
 
 **风险**：
 
-- OTel SDK 体积大 → build tag `obs_otel` 隔离；默认仍 noop
-- Audit log 体积 → logrotate 由用户自管
+- gRPC plugin 元数据获取阻塞 → 设置 2s 超时 + 缓存
+- 插件来源不可信 → 仅返回 metadata，不暴露 plugin 内部代码路径
 
 ---
 
-### P4 — 上下文压缩 + 多渠道 ☐
+### P4 — 测试用例库 + 收尾 ☐
 
 **状态**：☐ 待启动（依赖 P3）
 
-**目标**：实现 Compaction + Ollama + Gemini + Provider 路由。
+**目标**：建立 `docs/test-cases.md`（≥ 50 条覆盖 v3 + v4 全部能力），发 `RELEASE-v4.md`，打 `v4.0.0` tag。
 
-**启动时**：新建 `docs/PHASE-4-PLAN.md`，含实施步骤；按需新建 `docs/PHASE-4-DESIGN.md` 做详细设计。
-
-**完成判定（本阶段全部 ✅ 才能进入 P5）**：
-
-- ☐ `docs/PHASE-4-PLAN.md` 创建
-- ☐ `internal/compaction/` 完整（strategy + truncate + llmsummary + token + compactor）
-- ☐ `internal/llm/ollama/` 完整
-- ☐ `internal/llm/gemini/` 完整
-- ☐ `internal/llm/client.go` Provider 路由
-- ☐ `internal/agent/runner.go` loop 接入 compactor
-- ☐ 9 个验收用例全部通过（5 compaction + 2 ollama + 2 gemini + 1 路由）
-
-**不做（本阶段）**：
-
-- Anthropic thinking / budget control（v5+）
-- 模型自动 fallback（v5+）
-- 多实例 session 共享
-
-**参考（仅引用，详细设计在 PHASE-4-DESIGN）**：
-
-- `../deepseek-harness/packages/compaction/` — Node 版 BasicCompactionEngine
-- `../deepseek-harness/packages/compaction/strategy.ts` + `truncate.ts` + `summary.ts` — 策略模式
-- `../deepseek-harness/packages/llm/llm-deepseek/src/common/messages-api.ts` — DeepSeek Messages（Ollama 不一样，但 URL 模式参考）
-- `../deepseek-harness/docs/deepseek-llm-api-wire-extensions.md` — wire extensions
-- `../deepseek-harness-java/deepseek-harness-java-domain/src/main/java/cn/xiaofuge/deepseek/harness/domain/agent/service/compaction/BasicCompactionEngine.java` — Java 版压缩思路
-
-**子 TODO 索引**（在 PHASE-4-PLAN 内展开）：
-
-- T4.1 `internal/compaction/strategy.go`：Strategy interface
-- T4.2 `internal/compaction/truncate.go`：truncate 实现
-- T4.3 `internal/compaction/llmsummary.go`：llm-summary 实现
-- T4.4 `internal/compaction/token.go`：token 估算（tiktoken-go 可选）
-- T4.5 `internal/compaction/compactor.go`：调度器
-- T4.6 `internal/agent/runner.go`：loop 每轮调 compactor.Maybe
-- T4.7 `internal/llm/ollama/ollama.go`：Ollama Client + Chat + ChatStream
-- T4.8 `internal/llm/gemini/gemini.go`：Gemini Client + Chat + ChatStream
-- T4.9 `internal/llm/client.go`：Provider 路由 switch
-- T4.10 `internal/config/config.go`：LLMConfig.Provider 验证
-- T4.11 9 个验收用例
-- T4.12 README 更新（4 provider 配置示例）
-
-**工时**：4 天
-
-**验收**：
-
-- `PHASE-4-PLAN.md` 完成
-- `go test ./internal/compaction/... ./internal/llm/ollama/... ./internal/llm/gemini/...` 全绿
-- 端到端：长对话 50 轮后 `/history` 看到 summary
-- 端到端：本地 `ollama serve` + `provider: ollama` → dsh 可用
-- 端到端：`provider: gemini` + 真实 API key → dsh 可用
-
-**风险**：
-
-- Ollama / Gemini 协议变动 → 抽 adapter 层
-- Compaction 让 LLM"失忆" → prompt 注入压缩说明 + 保留 system + 保留最近 N
-
----
-
-### P5 — 子代理 + 测试用例库 + 收尾 ☐
-
-**状态**：☐ 待启动（依赖 P4 + P1）
-
-**目标**：实现 Sub-agent sync + 建立 test-cases.md + v4 tag 发布。
-
-**启动时**：新建 `docs/PHASE-5-PLAN.md`，含实施步骤；按需新建 `docs/PHASE-5-DESIGN.md` 做详细设计。
+**启动时**：新建 `docs/PHASE-4-PLAN.md`，含实施步骤。
 
 **完成判定（v4 发布）**：
 
-- ☐ `docs/PHASE-5-PLAN.md` 创建
-- ☐ `internal/subagent/sync.go` 创建
-- ☐ `internal/tools/agent_spawn.go` 创建
-- ☐ `internal/agent/runner.go` SubSpawner 字段接入
-- ☐ `docs/test-cases.md` 创建（≥ 50 条）
-- ☐ `docs/RELEASE-v4.md` 创建
-- ☐ README 更新
-- ☐ cmd/dsh version → 0.4.0
-- ☐ git tag v0.4.0
-- ☐ 5 个验收用例全部通过
-- ☐ `go test -count=1 ./...` 全绿（合计 ~170 用例）
+- ☐ `docs/PHASE-4-PLAN.md` 创建
+- ☐ `docs/test-cases.md` 创建（≥ 50 条，覆盖 Skill / Sub-agent / Obs / Audit / Compaction / Ollama / Gemini / 事件流 / Gateway SSE / 插件视图）
+- ☐ `docs/RELEASE-v4.md` 创建（含实际交付清单 + 已知限制 + 升级指南）
+- ☐ README 更新（v4 功能段落 + 4 provider 配置 + Gateway SSE 用法 + 事件流概念）
+- ☐ cmd/dsh version → v4.0.0
+- ☐ git tag `v4.0.0` 存在
+- ☐ `go test -count=1 ./...` 全绿（合计 ≥ 220 用例）
 - ☐ `go vet ./...` 0 warning
 - ☐ `go test -cover ./...` ≥ 80%
 
 **不做（本阶段）**：
 
 - 并发 sub-agent（v5+）
-- Skill loader（P2，v5+）
-- OS sandbox（v5+）
 - Plan mode / Persona / Schedule（v5+）
+- OS sandbox（v5+：Java 不上 sandbox，Go 版同上）
 
-**参考（仅引用，详细设计在 PHASE-5-DESIGN）**：
+**参考（仅引用，详细设计在 PHASE-4-DESIGN）**：
 
-- `../deepseek-harness/packages/subagent/subagent.ts` — Node 版 sub-agent 接口
-- `../deepseek-harness/packages/subagent/fork.ts` + `../deepseek-harness/packages/subagent/spawn.ts` — Fork vs Spawn 思路
-- `../deepseek-harness-java/deepseek-harness-java-domain/src/main/java/cn/xiaofuge/deepseek/harness/domain/agent/service/subagent/SyncSpawner.java` — Java 版 sync spawner（如存在）
-- `../deepseek-harness-java/deepseek-harness-java-domain/src/main/java/cn/xiaofuge/deepseek/harness/domain/agent/service/subagent/ForkInProcessProvider.java` — Java 版 in-process fork
-- `../deepseek-harness-java/docs/md/test-cases.md` — Java 版用例库（直接借鉴结构）
-- `../deepseek-harness-java/docs/md/release-v0.1.7-development-notes.md` §8.1 — Java 版测试用例库章节
+- `../deepseek-harness-java/docs/md/test-cases.md` — Java 版用例库（结构参考）
+- `../deepseek-harness-java/docs/md/release-v0.1.7-development-notes.md` §8.1 — Java 版用例库章节
 - `../deepseek-harness/docs/development.md` — Node 版开发指南
 
-**子 TODO 索引**（在 PHASE-5-PLAN 内展开）：
+**子 TODO 索引**（在 PHASE-4-PLAN 内展开）：
 
-- T5.1 `internal/subagent/sync.go`：Spawner interface + SyncSpawner
-- T5.2 `internal/tools/agent_spawn.go`：内置工具
-- T5.3 `internal/agent/runner.go`：SubSpawner 字段 + 嵌套深度保护
-- T5.4 `docs/test-cases.md`：用例库（≥ 50 条）
-- T5.5 `docs/RELEASE-v4.md`：实际交付清单 + 已知限制 + 升级指南
-- T5.6 README 更新（v4 功能段落 + 4 provider 配置 + Gateway SSE）
-- T5.7 cmd/dsh version → 0.4.0
-- T5.8 git tag v0.4.0
-- T5.9 5 个验收用例 + 全量回归 + 覆盖率 ≥ 80%
+- T4.1 收集 v3 已通过的 30+ 验收用例 + v4 P1/P2/P3 新增用例
+- T4.2 `docs/test-cases.md`：分类组织（按 v4 章节 / 用例编号 / 自动化状态）
+- T4.3 `docs/RELEASE-v4.md`：实际交付清单 + 已知限制 + v2/v3 → v4 升级指南
+- T4.4 README 更新
+- T4.5 cmd/dsh version → v4.0.0
+- T4.6 git tag v4.0.0
+- T4.7 全量回归 + 覆盖率检查
 
-**工时**：3 天
+**工时**：2 天
 
 **验收**：
 
-- `PHASE-5-PLAN.md` 完成
-- `go test -count=1 ./...` 全绿（合计 ~170 用例）
+- `PHASE-4-PLAN.md` 完成
+- `go test -count=1 ./...` 全绿
 - `go vet ./...` 0 warning
 - `go test -cover ./...` ≥ 80%
-- `docs/test-cases.md` 存在且 ≥ 50 条用例
-- `docs/RELEASE-v4.md` 发布
-- `git tag v0.4.0` 存在
+- `docs/test-cases.md` 存在且 ≥ 50 条
+- `docs/RELEASE-v4.md` 已发布
+- `git tag v4.0.0` 存在
 
 **风险**：
 
-- 子代理复用父 Registry 工具 → `agent_spawn` 自身不应在子 Runner 中注册（避免无限递归）
-- 用例库维护成本 → 单一真相源；PR review 强制检查
+- 用例库维护成本 → 单一真相源；PR review 强制
+- 升级指南不准确 → 给出 v3 → v4 的最小升级操作清单
 
 ---
 
@@ -524,20 +434,20 @@ P5 (Sub-agent + 用例库 + 收尾) ☐ ←── 依赖 P1（事件流用于子
 | 阶段 | 实施计划 | 代码 | 测试 | 文档 |
 |---|---|---|---|---|
 | P0 ✅ | — | — | — | `phase/v4-evolution` branch + v2.0.2 tag |
+| v3 并行 ✅ | — | 7 大模块 | 验收矩阵 | `RELEASE-v3.md` |
 | P1 ☐ | `PHASE-1-PLAN.md` | `internal/store/{event,projection,projector}.go` | 6 用例 | — |
 | P2 ☐ | `PHASE-2-PLAN.md` | `internal/server/gateway*.go` | 5 用例 | README |
-| P3 ☐ | `PHASE-3-PLAN.md` | `internal/obs/*.go` + `internal/audit/*.go` | 7 用例 | — |
-| P4 ☐ | `PHASE-4-PLAN.md` | `internal/compaction/*.go` + `internal/llm/{ollama,gemini}/*.go` | 9 用例 | README |
-| P5 ☐ | `PHASE-5-PLAN.md` | `internal/subagent/*.go` + `internal/tools/agent_spawn.go` | 5 用例 + 用例库 | `test-cases.md` + `RELEASE-v4.md` |
+| P3 ☐ | `PHASE-3-PLAN.md` | `internal/plugin/view.go` | 3 用例 | — |
+| P4 ☐ | `PHASE-4-PLAN.md` | — | — | `test-cases.md` + `RELEASE-v4.md` |
 
 ### §4.2 Release 节奏
 
 - P0 ✅ 不发版（baseline lock，已是 v2.0.2）
+- v3 ✅ → 已发 `v3.0.0`（含全部 v3 功能）
 - P1 完成 → 可发 `v3.1-preview`（可选）
 - P2 完成 → 可发 `v3.2-preview`（可选）
 - P3 完成 → 可发 `v3.3-preview`（可选）
-- P4 完成 → 可发 `v3.4-preview`（可选）
-- **P5 完成 → 发 `v4.0.0`（正式版）**
+- **P4 完成 → 发 `v4.0.0`（正式版）**
 
 ---
 
@@ -563,17 +473,11 @@ P5 (Sub-agent + 用例库 + 收尾) ☐ ←── 依赖 P1（事件流用于子
 | # | 风险 | 缓解 | 触发阶段 |
 |---|---|---|---|
 | R1 | 事件流回放慢 | 投影缓存 + 增量写 | P1 |
-| R2 | OTel SDK 体积大 | build tag `obs_otel` 隔离 | P3 |
-| R3 | Ollama / Gemini 协议变动 | 抽 adapter 层 | P4 |
-| R4 | Compaction 让 LLM"失忆" | prompt 注入压缩说明 + 保留 system + 保留最近 N | P4 |
-| R5 | Audit log 体积 | logrotate 由用户自管；默认 redact | P3 |
-| R6 | 投影缓存无容量上限 | v5+ 加 LRU | P1 |
-| R7 | 旧 v2 client 依赖旧端点 | 旧端点保留 + 转发 | P2 |
-| R8 | 测试用例库维护成本 | 单一真相源；PR review 强制 | P5 |
-| R9 | Provider 路由错配 | 启动时校验 provider + 真实可达 | P4 |
-| R10 | 子代理无限递归 | agent_spawn 不在子 Runner 注册；嵌套深度保护 | P5 |
-| R11 | SQLite 单写者限制 | v2 已用 WAL + busy_timeout；P1 不再上 lease | P1 |
-| R12 | 用户对阶段粒度不满意 | 本文档每阶段可拆分（如 P3 拆 obs / audit） | 全部 |
+| R2 | 旧 v2 client 依赖旧端点 | 旧端点保留 + 转发 | P2 |
+| R3 | Gateway SSE 超时与 HTTP client 不匹配 | 默认 300s | P2 |
+| R4 | 插件库存视图性能 | 缓存 TTL | P3 |
+| R5 | 用例库维护成本 | 单一真相源；PR review 强制 | P4 |
+| R6 | SQLite 单写者限制 | v2 已用 WAL + busy_timeout | P1 |
 
 ---
 
@@ -581,8 +485,8 @@ P5 (Sub-agent + 用例库 + 收尾) ☐ ←── 依赖 P1（事件流用于子
 
 如确认按本规划执行：
 
-1. **P0 收尾**（今天）：创建 `phase/v4-evolution` branch（v2.0.2 tag 已存在）
-2. **P1 启动**（下次开工）：先写 `docs/PHASE-1-PLAN.md`（实施步骤）→ 按需写 `PHASE-1-DESIGN.md`（详细设计）→ 开始写代码
+1. **v3 收尾**（今天）：确认 `RELEASE-v3.md` 完整 → 打 tag `v3.0.0`
+2. **P1 启动**（下次开工）：先写 `docs/PHASE-1-PLAN.md` → 按需写 `PHASE-1-DESIGN.md` → 开始写代码
 3. 每阶段流程：**PHASE-N-PLAN.md** → 代码 → 测试 → commit → **更新本 ROADMAP 状态** → 下阶段
 
 每阶段开工前请先告知，我会：
@@ -592,6 +496,6 @@ P5 (Sub-agent + 用例库 + 收尾) ☐ ←── 依赖 P1（事件流用于子
 
 ---
 
-**版本**：0-ROADMAP v0.2（2026-09-20 起）
-**配套文档**：每个阶段的 `PHASE-N-PLAN.md`（启动时创建）；`PHASE-N-DESIGN.md`（按需创建）
-**配套 release**：`docs/RELEASE-v4.md`（P5 完成时创建）
+**版本**：0-ROADMAP v0.3（2026-09-26 更新：v3 并行完成，5 阶段缩减为 4 阶段）
+**配套文档**：每个阶段的 `PHASE-N-PLAN.md`（启动时创建）；`DESIGN-v4.md`（v4 详细设计）
+**配套 release**：`docs/RELEASE-v4.md`（P4 完成时创建）

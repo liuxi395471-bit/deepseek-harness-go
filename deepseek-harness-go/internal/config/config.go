@@ -21,9 +21,15 @@ import (
 
 // Config 是 cmd/dsh 使用的顶层配置。
 type Config struct {
-	LLM    LLMConfig    `yaml:"llm"    json:"llm"`
-	Agent  AgentConfig  `yaml:"agent"  json:"agent"`
-	Server ServerConfig `yaml:"server" json:"server"`
+	LLM        LLMConfig        `yaml:"llm"        json:"llm"`
+	Agent      AgentConfig      `yaml:"agent"      json:"agent"`
+	Server     ServerConfig     `yaml:"server"     json:"server"`
+	Obs        ObsConfig        `yaml:"obs"        json:"obs"`
+	Skills     SkillsConfig     `yaml:"skills"     json:"skills"`
+	Compaction CompactionConfig `yaml:"compaction" json:"compaction"`
+	Audit      AuditConfig      `yaml:"audit"      json:"audit"`
+	Sandbox    SandboxConfig    `yaml:"sandbox"    json:"sandbox"`
+	Shell      ShellConfig      `yaml:"shell"      json:"shell"`
 }
 
 // ServerConfig 保存 HTTP 服务器设置。
@@ -35,13 +41,54 @@ type ServerConfig struct {
 	MaxSessions int           `yaml:"max-concurrent-sessions" env:"DSH_SERVER_MAX_SESSIONS"`
 }
 
-// LLMConfig 保存 OpenAI 兼容的上游设置。
+// LLMConfig 保存上游 LLM 的连接设置。Provider 决定协议：
+// openai（默认，Chat Completions 兼容）| anthropic | ollama | gemini。
 type LLMConfig struct {
-	BaseURL   string        `yaml:"base-url"   env:"DEEPSEEK_BASE_URL"`
-	APIKey    string        `yaml:"api-key"    env:"DEEPSEEK_API_KEY"`
-	Model     string        `yaml:"model"      env:"DEEPSEEK_DEFAULT_MODEL"`
-	MaxTokens int           `yaml:"max-tokens" env:"DEEPSEEK_MAX_TOKENS"`
-	Timeout   time.Duration `yaml:"timeout"    env:"DEEPSEEK_TIMEOUT"`
+	Provider string        `yaml:"provider"   env:"DSH_LLM_PROVIDER"`
+	BaseURL  string        `yaml:"base-url"   env:"DEEPSEEK_BASE_URL"`
+	APIKey   string        `yaml:"api-key"    env:"DEEPSEEK_API_KEY"`
+	Model    string        `yaml:"model"      env:"DEEPSEEK_DEFAULT_MODEL"`
+	MaxTokens int          `yaml:"max-tokens" env:"DEEPSEEK_MAX_TOKENS"`
+	Timeout  time.Duration `yaml:"timeout"    env:"DEEPSEEK_TIMEOUT"`
+}
+
+// ObsConfig 控制 internal/obs 的实现选择（DESIGN-v3 §C.4）。
+type ObsConfig struct {
+	Provider string  `yaml:"provider"     env:"DSH_OBS_PROVIDER"` // noop | otel
+	Endpoint string  `yaml:"endpoint"     env:"DSH_OBS_OTEL_ENDPOINT"`
+	ServiceName string `yaml:"service-name" env:"DSH_OBS_OTEL_SERVICE_NAME"`
+	SampleRatio float64 `yaml:"sample-ratio" env:"DSH_OBS_OTEL_SAMPLE_RATIO"`
+}
+
+// SkillsConfig 是 skill 系统（DESIGN-v3 §A）的配置。
+type SkillsConfig struct {
+	Dir string `yaml:"dir" env:"DSH_SKILLS_DIR"` // 默认 ~/.dsh/skills
+}
+
+// CompactionConfig 是上下文压缩（DESIGN-v3 §D.4）的配置。
+type CompactionConfig struct {
+	Enabled       bool   `yaml:"enabled"        env:"DSH_COMPACTION_ENABLED"`
+	TriggerTokens int    `yaml:"trigger-tokens" env:"DSH_COMPACTION_TRIGGER_TOKENS"`
+	Strategy      string `yaml:"strategy"       env:"DSH_COMPACTION_STRATEGY"` // truncate | llm-summary
+	KeepRecent    int    `yaml:"keep-recent"    env:"DSH_COMPACTION_KEEP_RECENT"`
+}
+
+// AuditConfig 是审计日志（DESIGN-v3 §E）的配置。
+type AuditConfig struct {
+	Path  string `yaml:"path"  env:"DSH_AUDIT_PATH"`  // 空表示关闭
+	Full  bool   `yaml:"full"  env:"DSH_AUDIT_FULL"`  // true 记录 args 原文
+}
+
+// SandboxConfig 是 OS sandbox（DESIGN-v3 §F）的配置。
+type SandboxConfig struct {
+	Provider string `yaml:"provider" env:"DSH_SANDBOX_PROVIDER"` // noop | windows_acl | linux_ns | auto
+}
+
+// ShellConfig 是 shell 工具的装配配置。
+type ShellConfig struct {
+	Enabled   bool          `yaml:"enabled"    env:"DSH_SHELL_ENABLED"`
+	AllowList []string      `yaml:"allowlist"  env:"DSH_SHELL_ALLOWLIST"` // 环境变量为逗号分隔
+	Timeout   time.Duration `yaml:"timeout"    env:"DSH_SHELL_TIMEOUT"`
 }
 
 // AgentConfig 保存 agent runner 的循环与工作区设置。
@@ -59,6 +106,7 @@ func defaults() Config {
 	maxTokens := 8192
 	return Config{
 		LLM: LLMConfig{
+			Provider:  "openai",
 			BaseURL:   "http://127.0.0.1:8777/v1",
 			Model:     "glm-5.3-flash",
 			MaxTokens: maxTokens,
@@ -76,6 +124,28 @@ func defaults() Config {
 			AuthToken:   "",
 			Timeout:     0,
 			MaxSessions: 16,
+		},
+		Obs: ObsConfig{
+			Provider:    "noop",
+			Endpoint:    "localhost:4317",
+			ServiceName: "dsh",
+			SampleRatio: 1.0,
+		},
+		Skills: SkillsConfig{
+			Dir: "", // 空表示 ~/.dsh/skills
+		},
+		Compaction: CompactionConfig{
+			Enabled:       false,
+			TriggerTokens: 16000,
+			Strategy:      "truncate",
+			KeepRecent:    6,
+		},
+		Audit: AuditConfig{
+			Path: "",
+			Full: false,
+		},
+		Sandbox: SandboxConfig{
+			Provider: "noop",
 		},
 	}
 }
@@ -117,6 +187,9 @@ func Load(path string) (Config, error) {
 func overrideEnv(cfg *Config) []string {
 	var problems []string
 
+	if v := os.Getenv("DSH_LLM_PROVIDER"); v != "" {
+		cfg.LLM.Provider = v
+	}
 	if v := os.Getenv("DEEPSEEK_BASE_URL"); v != "" {
 		cfg.LLM.BaseURL = v
 	}
@@ -169,6 +242,91 @@ func overrideEnv(cfg *Config) []string {
 		}
 	}
 
+	if v := os.Getenv("DSH_OBS_PROVIDER"); v != "" {
+		cfg.Obs.Provider = v
+	}
+	if v := os.Getenv("DSH_OBS_OTEL_ENDPOINT"); v != "" {
+		cfg.Obs.Endpoint = v
+	}
+	if v := os.Getenv("DSH_OBS_OTEL_SERVICE_NAME"); v != "" {
+		cfg.Obs.ServiceName = v
+	}
+	if v := os.Getenv("DSH_OBS_OTEL_SAMPLE_RATIO"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Obs.SampleRatio = f
+		} else {
+			problems = append(problems, fmt.Sprintf("DSH_OBS_OTEL_SAMPLE_RATIO=%q is not a float: %v", v, err))
+		}
+	}
+
+	if v := os.Getenv("DSH_SKILLS_DIR"); v != "" {
+		cfg.Skills.Dir = v
+	}
+
+	if v := os.Getenv("DSH_COMPACTION_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Compaction.Enabled = b
+		} else {
+			problems = append(problems, fmt.Sprintf("DSH_COMPACTION_ENABLED=%q is not a bool: %v", v, err))
+		}
+	}
+	if v := os.Getenv("DSH_COMPACTION_TRIGGER_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Compaction.TriggerTokens = n
+		} else {
+			problems = append(problems, fmt.Sprintf("DSH_COMPACTION_TRIGGER_TOKENS=%q is not an integer: %v", v, err))
+		}
+	}
+	if v := os.Getenv("DSH_COMPACTION_STRATEGY"); v != "" {
+		cfg.Compaction.Strategy = v
+	}
+	if v := os.Getenv("DSH_COMPACTION_KEEP_RECENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Compaction.KeepRecent = n
+		} else {
+			problems = append(problems, fmt.Sprintf("DSH_COMPACTION_KEEP_RECENT=%q is not an integer: %v", v, err))
+		}
+	}
+
+	if v := os.Getenv("DSH_AUDIT_PATH"); v != "" {
+		cfg.Audit.Path = v
+	}
+	if v := os.Getenv("DSH_AUDIT_FULL"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Audit.Full = b
+		} else {
+			problems = append(problems, fmt.Sprintf("DSH_AUDIT_FULL=%q is not a bool: %v", v, err))
+		}
+	}
+
+	if v := os.Getenv("DSH_SANDBOX_PROVIDER"); v != "" {
+		cfg.Sandbox.Provider = v
+	}
+
+	if v := os.Getenv("DSH_SHELL_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Shell.Enabled = b
+		} else {
+			problems = append(problems, fmt.Sprintf("DSH_SHELL_ENABLED=%q is not a bool: %v", v, err))
+		}
+	}
+	if v := os.Getenv("DSH_SHELL_ALLOWLIST"); v != "" {
+		var items []string
+		for _, part := range strings.Split(v, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				items = append(items, p)
+			}
+		}
+		cfg.Shell.AllowList = items
+	}
+	if v := os.Getenv("DSH_SHELL_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Shell.Timeout = d
+		} else {
+			problems = append(problems, fmt.Sprintf("DSH_SHELL_TIMEOUT=%q is not a duration: %v", v, err))
+		}
+	}
+
 	if v := os.Getenv("DSH_SERVER_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.Server.Enabled = b
@@ -203,6 +361,11 @@ func overrideEnv(cfg *Config) []string {
 func (c *Config) Validate() error {
 	var problems []string
 
+	switch c.LLM.Provider {
+	case "", "openai", "anthropic", "ollama", "gemini":
+	default:
+		problems = append(problems, fmt.Sprintf("llm.provider %q not supported (supported: openai, anthropic, ollama, gemini)", c.LLM.Provider))
+	}
 	if c.LLM.BaseURL == "" {
 		problems = append(problems, "llm.base-url is required (set in YAML or DEEPSEEK_BASE_URL)")
 	} else {
@@ -224,6 +387,30 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Agent.WorkspaceRoot) == "" {
 		problems = append(problems, "agent.workspace must not be empty")
+	}
+	switch c.Obs.Provider {
+	case "", "noop", "otel":
+	default:
+		problems = append(problems, fmt.Sprintf("obs.provider %q not supported (supported: noop, otel)", c.Obs.Provider))
+	}
+	if c.Obs.SampleRatio < 0 || c.Obs.SampleRatio > 1 {
+		problems = append(problems, fmt.Sprintf("obs.otel.sample-ratio must be in [0, 1], got %v", c.Obs.SampleRatio))
+	}
+	switch c.Compaction.Strategy {
+	case "", "truncate", "llm-summary":
+	default:
+		problems = append(problems, fmt.Sprintf("compaction.strategy %q not supported (supported: truncate, llm-summary)", c.Compaction.Strategy))
+	}
+	if c.Compaction.TriggerTokens < 0 {
+		problems = append(problems, fmt.Sprintf("compaction.trigger-tokens must be >= 0, got %d", c.Compaction.TriggerTokens))
+	}
+	if c.Compaction.KeepRecent < 0 {
+		problems = append(problems, fmt.Sprintf("compaction.keep-recent must be >= 0, got %d", c.Compaction.KeepRecent))
+	}
+	switch c.Sandbox.Provider {
+	case "", "noop", "windows_acl", "linux_ns", "auto":
+	default:
+		problems = append(problems, fmt.Sprintf("sandbox.provider %q not supported (supported: noop, windows_acl, linux_ns, auto)", c.Sandbox.Provider))
 	}
 	if c.Server.Enabled && strings.TrimSpace(c.Server.AuthToken) == "" {
 		problems = append(problems, "server.enabled=true requires server.auth-token to be set")

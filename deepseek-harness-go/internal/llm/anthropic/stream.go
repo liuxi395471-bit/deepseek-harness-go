@@ -89,9 +89,6 @@ func Feed(ctx context.Context, r io.Reader) <-chan Event {
 		}
 
 		for scanner.Scan() {
-			if err := ctx.Err(); err != nil {
-				return
-			}
 			line := scanner.Text()
 			switch {
 			case line == "":
@@ -109,6 +106,12 @@ func Feed(ctx context.Context, r io.Reader) <-chan Event {
 		}
 		// 最后一帧的兜底刷新：防止流在没有结尾空行的情况下结束。
 		flush()
+		if err := scanner.Err(); err != nil {
+			select {
+			case <-ctx.Done():
+			case ch <- Event{Type: evError, ErrMessage: err.Error()}:
+			}
+		}
 	}()
 	return ch
 }

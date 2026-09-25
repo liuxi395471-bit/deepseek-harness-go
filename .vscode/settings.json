@@ -1,6 +1,0 @@
-{
-  "go.testFlags": ["-v"],
-  "go.alternateTools": {},
-  "go.delveFlags": "",
-  "launch": {}
-}

@@ -339,6 +339,9 @@ func (c *OpenAICompatibleClient) doStream(ctx context.Context, req ChatRequest, 
 		}
 	}
 	for frame := range sseFeed(ctx, resp.Body) {
+		if frame.err != nil {
+			return frame.err
+		}
 		chunk := frame.Chunk(0)
 		select {
 		case <-ctx.Done():

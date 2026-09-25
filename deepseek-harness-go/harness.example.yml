@@ -17,3 +17,44 @@ agent:
   system-prompt: |                     # 可选；留空使用内置模板
     你是 dsh，一个简洁可靠的 CLI 助手。
   debug: false                         # true 时打印所有 agent 事件到 stderr
+
+server:
+  enabled: true
+  listen: "127.0.0.1:8080"
+  auth-token: "aBcD1234EfGh5678IjKl9012MnOp3456QrStUvWx="
+  request-timeout: 30s          # 选填
+  max-concurrent-sessions: 32   # 选填
+# ---- DESIGN-v3 新增配置 ----
+
+llm:
+  # provider: openai     # openai | anthropic | ollama | gemini（§G.4）
+                         # ollama 时 base-url 默认 http://127.0.0.1:11434
+                         # gemini 时 api-key 走 DEEPSEEK_API_KEY 或此处的 api-key
+
+skills:
+  dir: ""                # skill 目录（§A.1）；空 = ~/.dsh/skills/*.md
+
+obs:
+  provider: noop         # noop | otel（§C.4）
+  otel:
+    endpoint: "localhost:4317"   # OTLP gRPC
+    service-name: dsh
+    sample-ratio: 1.0
+
+compaction:
+  enabled: false         # 长会话上下文压缩（§D.4）
+  trigger-tokens: 16000
+  strategy: truncate     # truncate | llm-summary
+  keep-recent: 6
+
+audit:
+  path: ""               # 审计 JSONL 路径（§E）；空 = 关闭。CLI --audit 优先
+  full: false            # true 记录 args 原文；false 只记 SHA-256 hash
+
+sandbox:
+  provider: noop         # noop | windows_acl | linux_ns | auto（§F.4）
+
+shell:
+  enabled: false         # 装配 shell 工具（DESIGN-v2 §C.3 + v3 §F.4）
+  allowlist: []          # 允许的命令；空 = 拒绝一切
+  timeout: 30s

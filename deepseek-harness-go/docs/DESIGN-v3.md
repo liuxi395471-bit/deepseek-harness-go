@@ -1,7 +1,7 @@
 # DeepSeek Harness Go 版 — 第三版设计文档（v3 / DESIGN-v3）
 
 > **历史快照**。本文档是 [DESIGN-v2.md](./DESIGN-v2.md) 的**继任设计**，但已被 v4 借鉴并扩展。
-> - **v4 实施规划**：[0-ROADMAP.md](./0-ROADMAP.md)（替代 [PLAN-v3.md](./PLAN-v3.md)）
+> - **v4 实施规划**：[DESIGN-v4.md](./DESIGN-v4.md)（详细设计）+ [0-ROADMAP.md](./0-ROADMAP.md)（总览）
 > - v4 在 v3 基础上**新增**：§A 事件流 + 投影缓存（借鉴 Java v0.1.7 §4）、§B 统一 Gateway SSE（借鉴 Java v0.1.7 §5）、§C 插件库存视图（借鉴 Java v0.1.7 §7）、§D 测试用例库（借鉴 Java v0.1.7 §8.1）
 > - v4 把 v3 原 §F Sandbox **删除**（借鉴 Java 不上 OS sandbox 而是 Python runtime 隔离；Go 版 v5+ 再考虑）
 > - v4 把 v3 原 §A Skill **降级 P2**

@@ -107,3 +107,13 @@ type LoopError struct {
 }
 
 func (LoopError) EventTag() string { return "loop_error" }
+
+// Compacted 通知一次上下文压缩（DESIGN-v3 §D）。Before/After 是
+// 压缩前后的消息条数。压缩只影响本轮发给 LLM 的消息序列，
+// 会话存储保持完整。
+type Compacted struct {
+	Before int
+	After  int
+}
+
+func (Compacted) EventTag() string { return "compacted" }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"deepseek-harness-go/internal/approval"
+	"deepseek-harness-go/internal/sandbox"
 	"deepseek-harness-go/internal/tool"
 )
 
@@ -39,8 +40,11 @@ type ShellConfig struct {
 //     tool.Result{IsError: true}。
 //  4. 输出被截断到 MaxOutputBytes（默认 1 MiB），并附带截断标记。
 type ShellTool struct {
-	cfg     ShellConfig
+	cfg      ShellConfig
 	approver approval.Approver
+	// Sandbox 是 v3 §F 的 OS 沙箱（可选）。nil 等价 NoopSandbox，
+	// 与 v2 行为一致。
+	Sandbox sandbox.Sandbox
 }
 
 // NewShellTool 构造一个 ShellTool。approver 可以为 nil；此时工具
@@ -139,7 +143,22 @@ func (s *ShellTool) Execute(ctx context.Context, raw json.RawMessage) (tool.Resu
 	// 以避免泄露机密信息。
 	cmd.Env = minimalEnv()
 
+	// v3 §F.4：执行前应用 OS 沙箱。Apply 失败以 IsError 呈现，
+	// 绝不静默降级为无沙箱执行。
+	sb := s.Sandbox
+	if sb == nil {
+		sb = sandbox.NoopSandbox{}
+	}
+	if err := sb.Apply(ctx, cmd); err != nil {
+		return tool.Err("shell: sandbox: " + err.Error()), nil
+	}
+
 	output, runErr := cmd.CombinedOutput()
+	// 沙箱注册的资源（如 windows_acl 受限 token 句柄）在 cmd 退出后
+	// 必须释放；Noop 不需要。释放失败不影响主流程。
+	if releaser, ok := sb.(sandbox.TokenReleaser); ok {
+		releaser.ReleaseToken(cmd)
+	}
 	if int64(len(output)) > int64(s.cfg.MaxOutputBytes) {
 		output = append(output[:s.cfg.MaxOutputBytes], []byte("\n[...truncated]")...)
 	}
