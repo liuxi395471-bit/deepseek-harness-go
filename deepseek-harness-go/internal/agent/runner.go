@@ -33,7 +33,7 @@ type RunResult struct {
 	Rounds        int
 	StopReason    string
 	Error         error
-	SessionID     string // v2：当 Store==nil 时为空；启用会话后会被赋值
+	SessionID     string    // v2：当 Store==nil 时为空；启用会话后会被赋值
 	Usage         llm.Usage // v2：本次运行所有轮次的聚合 usage
 }
 
@@ -259,7 +259,7 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 	}
 
 	// 追加用户 prompt，除非是恢复模式（恢复时没有新 prompt ——
-// 会话由其他途径延续；服务端通常会在调用 RunStream 前通过 Store.Append
+	// 会话由其他途径延续；服务端通常会在调用 RunStream 前通过 Store.Append
 	// 注入一条用户消息）。
 	if prompt != "" {
 		userMsg := llm.Message{Role: llm.RoleUser, Content: prompt}

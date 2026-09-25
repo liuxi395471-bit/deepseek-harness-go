@@ -286,7 +286,7 @@ func setupObs(ctx context.Context, cfg config.Config, debug bool) (obs.Provider,
 	if err != nil {
 		log.Fatalf("[dsh] obs otel: %v", err)
 	}
-		log.Printf("[dsh] obs: otel endpoint=%s service=%s", cfg.Obs.Endpoint, cfg.Obs.ServiceName)
+	log.Printf("[dsh] obs: otel endpoint=%s service=%s", cfg.Obs.Endpoint, cfg.Obs.ServiceName)
 	p.Tracer = handle
 	p.Meter = handle.Meter()
 	return p, handle
