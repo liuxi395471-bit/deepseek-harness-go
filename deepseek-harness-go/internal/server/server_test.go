@@ -16,6 +16,7 @@ import (
 
 	"deepseek-harness-go/internal/agent"
 	"deepseek-harness-go/internal/llm"
+	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/store"
 	"deepseek-harness-go/internal/tool"
 )
@@ -298,6 +299,70 @@ var (
 	_ = tool.NewRegistry
 )
 
+// --- T3 fake helpers ---
+
+type fakeTool struct {
+	name, desc string
+}
+
+func (f *fakeTool) Name() string        { return f.name }
+func (f *fakeTool) Description() string { return f.desc }
+func (f *fakeTool) Parameters() any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+func (f *fakeTool) Execute(ctx context.Context, args json.RawMessage) (tool.Result, error) {
+	return tool.Result{Content: "ok"}, nil
+}
+
+// fakeInventory 直接在 server_test 里实现 plugin.Inventory，
+// 避免引入 plugin 包（plugin.Inventory 接口用 plugin.PluginEntry，
+// 但 plugin.PluginEntry 是简单结构体，可以直接构造）。
+type fakeInventory struct {
+	entries []plugin.PluginEntry
+}
+
+func (f *fakeInventory) List(ctx context.Context) ([]plugin.PluginEntry, error) {
+	return f.entries, nil
+}
+func (f *fakeInventory) Get(ctx context.Context, name string) (plugin.PluginEntry, bool) {
+	for _, e := range f.entries {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	return plugin.PluginEntry{}, false
+}
+func (f *fakeInventory) Health(ctx context.Context, name string) (bool, error) {
+	if _, ok := f.Get(ctx, name); ok {
+		return true, nil
+	}
+	return false, nil
+}
+
+// 用 fakeTool 注册一个 LocalInventory 等价物。
+func newFakeInventoryFromReg(reg *tool.Registry) *fakeInventory {
+	tools := []plugin.ToolSpecView{}
+	for _, n := range reg.Names() {
+		if t, ok := reg.Get(n); ok {
+			tools = append(tools, plugin.ToolSpecView{
+				Name:        t.Name(),
+				Description: t.Description(),
+				Risk:        "low",
+				Parameters:  t.Parameters(),
+			})
+		}
+	}
+	return &fakeInventory{entries: []plugin.PluginEntry{
+		{
+			Name:    "local",
+			Kind:    "local",
+			Source:  "internal://registry",
+			Healthy: true,
+			Tools:   tools,
+		},
+	}}
+}
+
 // --- v4 §B Gateway 验收用例 ---
 
 // T2.5.1 /api/gateway/stream session.send 完成返回 final 帧
@@ -438,6 +503,73 @@ func TestGateway_Stubs(t *testing.T) {
 				t.Errorf("expected final frame: %+v", frames)
 			}
 		})
+	}
+}
+
+// T3.3.1 tools.list 接入真实 Inventory 后能拿到本地工具
+func TestGateway_ToolsList_WithInventory(t *testing.T) {
+	srv := newServer(t, newFakeRunner(), nil)
+	reg := tool.NewRegistry()
+	if err := reg.Register(&fakeTool{name: "shell", desc: "run shell"}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SetInventory(newFakeInventoryFromReg(reg))
+	body := strings.NewReader(`{"source":"tools.list","params":{}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/gateway/stream", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := do(t, srv, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	frames := parseSSEFrames(t, rec.Body.String())
+	if len(frames) == 0 {
+		t.Fatal("no frames")
+	}
+	final := frames[len(frames)-1]
+	if final["type"] != "final" {
+		t.Fatalf("last frame type = %v", final["type"])
+	}
+	payload, _ := final["payload"].(map[string]any)
+	if payload == nil {
+		t.Fatalf("payload missing: %+v", final)
+	}
+	tools, _ := payload["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %d, want 1: %+v", len(tools), tools)
+	}
+	t0, _ := tools[0].(map[string]any)
+	if t0["name"] != "shell" {
+		t.Errorf("name = %v", t0["name"])
+	}
+	if t0["plugin_kind"] != "local" {
+		t.Errorf("plugin_kind = %v", t0["plugin_kind"])
+	}
+}
+
+// T3.3.2 plugins.list 接入真实 Inventory 后能拿到 plugin entry
+func TestGateway_PluginsList_WithInventory(t *testing.T) {
+	srv := newServer(t, newFakeRunner(), nil)
+	reg := tool.NewRegistry()
+	if err := reg.Register(&fakeTool{name: "echo", desc: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SetInventory(newFakeInventoryFromReg(reg))
+	body := strings.NewReader(`{"source":"plugins.list","params":{}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/gateway/stream", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := do(t, srv, req)
+	frames := parseSSEFrames(t, rec.Body.String())
+	if len(frames) == 0 {
+		t.Fatal("no frames")
+	}
+	final := frames[len(frames)-1]
+	payload, _ := final["payload"].(map[string]any)
+	if payload == nil {
+		t.Fatalf("payload missing: %+v", final)
+	}
+	plugins, _ := payload["plugins"].([]any)
+	if len(plugins) != 1 {
+		t.Fatalf("plugins = %d, want 1", len(plugins))
 	}
 }
 

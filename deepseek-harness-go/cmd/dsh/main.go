@@ -156,13 +156,15 @@ func main() {
 	// v2 插件系统（DESIGN-v2 §B）。提供 --plugin 时，将每个插件作为
 	// 子 gRPC 服务器启动，建立连接，并把其工具合并进注册表。失败即致命
 	// —— 宁可拒绝启动，也不能静默丢弃用户明确要求的工具。
+	var pluginClients []*plugin.Client
 	if len(plugins) > 0 {
 		ps := make([]*string, len(plugins))
 		for i := range plugins {
 			s := plugins[i]
 			ps[i] = &s
 		}
-		hosts := loadPlugins(rootCtx, ps)
+		hosts, clients := loadPlugins(rootCtx, ps)
+		pluginClients = clients
 		defer func() {
 			for _, h := range hosts {
 				_ = h.Close()
@@ -251,7 +253,7 @@ func main() {
 			log.Printf("[dsh] warning: -serve given but cfg.server.enabled=false; forcing on")
 			cfg.Server.Enabled = true
 		}
-		runServer(rootCtx, runner, st, cfg)
+		runServer(rootCtx, runner, st, cfg, pluginClients)
 		return
 	}
 
@@ -354,7 +356,7 @@ func openStore(ctx context.Context, cfg config.Config) (store.Store, error) {
 }
 
 // runServer 在 HTTP 监听器上阻塞，直到 ctx 被取消。
-func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, cfg config.Config) {
+func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, cfg config.Config, pluginClients []*plugin.Client) {
 	if strings.TrimSpace(cfg.Server.AuthToken) == "" {
 		log.Fatalf("[dsh] server: cfg.server.auth-token (DSH_SERVER_AUTH_TOKEN) must be set before -serve")
 	}
@@ -364,6 +366,19 @@ func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, cf
 		Timeout:     int(cfg.Server.Timeout.Seconds()),
 		MaxSessions: cfg.Server.MaxSessions,
 	}, runner, st)
+
+	// v4 P3: 注入 Gateway inventory（本地工具 + 远端 gRPC 插件）。
+	combined := plugin.NewCombined()
+	combined.Add(&plugin.LocalInventory{Name: "local", Reg: toolGlobal})
+	if len(pluginClients) > 0 {
+		grpcInv := plugin.NewGRPCInventory()
+		for i, c := range pluginClients {
+			grpcInv.Add(fmt.Sprintf("plugin-%d", i+1), c)
+		}
+		combined.Add(grpcInv)
+	}
+	srv.SetInventory(combined)
+	srv.SetLLMClient(runner.Client)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
@@ -407,13 +422,14 @@ func absPath(p string) string {
 func rootContext() context.Context { return context.Background() }
 
 // loadPlugins 启动每个插件二进制，连接其 gRPC 服务器，并把它的工具
-// 注册到进程内的 tool.Registry 中。返回宿主句柄，供调用者在关闭时
-// 清理。
+// 注册到进程内的 tool.Registry 中。返回宿主句柄 + 已拨号 client，供
+// 调用者在关闭时清理。
 //
 // 失败即致命：如果用户显式传入 --plugin，静默丢弃工具比拒绝启动
 // 更糟。
-func loadPlugins(ctx context.Context, paths []*string) []*plugin.Host {
+func loadPlugins(ctx context.Context, paths []*string) ([]*plugin.Host, []*plugin.Client) {
 	hosts := make([]*plugin.Host, 0, len(paths))
+	clients := make([]*plugin.Client, 0, len(paths))
 	for _, p := range paths {
 		if *p == "" {
 			continue
@@ -452,8 +468,9 @@ func loadPlugins(ctx context.Context, paths []*string) []*plugin.Host {
 		}
 		log.Printf("[dsh] plugin %s: registered %d tools: %v", *p, added, names)
 		hosts = append(hosts, h)
+		clients = append(clients, client)
 	}
-	return hosts
+	return hosts, clients
 }
 
 // toolGlobal 是 loadPlugins 填充的全局 Registry。它在 main() 中、

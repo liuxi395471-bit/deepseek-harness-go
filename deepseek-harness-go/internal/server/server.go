@@ -27,6 +27,7 @@ import (
 
 	"deepseek-harness-go/internal/agent"
 	"deepseek-harness-go/internal/llm"
+	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/store"
 )
 
@@ -43,7 +44,8 @@ type Server struct {
 	cfg    Config
 	runner agent.StreamingRunner
 	store  store.Store
-	client llm.Client // v4 §B.6: for llm.call gateway source
+	client llm.Client     // v4 §B.6: for llm.call gateway source
+	inv    plugin.Inventory // v4 §C: for tools.list / plugins.list
 
 	// v4 §B: gateway router + handlers. 由 setGateway 在 Server 启动
 	// 时初始化。允许 nil（兼容仅使用旧端点的 server）。
@@ -82,6 +84,15 @@ func (s *Server) SetLLMClient(c llm.Client) {
 	s.client = c
 	if s.gw != nil {
 		s.gw.Client = c
+	}
+}
+
+// SetInventory 设置用于 tools.list / plugins.list source 的
+// inventory。可选；缺省时返回空数组。
+func (s *Server) SetInventory(inv plugin.Inventory) {
+	s.inv = inv
+	if s.gw != nil {
+		s.gw.Inventory = inv
 	}
 }
 

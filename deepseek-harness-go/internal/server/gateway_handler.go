@@ -20,14 +20,16 @@ import (
 
 	"deepseek-harness-go/internal/agent"
 	"deepseek-harness-go/internal/llm"
+	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/store"
 )
 
 // GatewayHandlers 持有 handler 依赖。
 type GatewayHandlers struct {
-	Runner agent.StreamingRunner
-	Store  store.Store
-	Client llm.Client // 用于 llm.call
+	Runner    agent.StreamingRunner
+	Store     store.Store
+	Client    llm.Client      // 用于 llm.call
+	Inventory plugin.Inventory // v4 P3: 用于 tools.list / plugins.list
 }
 
 // RegisterAll 把全部内置 source 注册到 router。
@@ -207,18 +209,50 @@ func (h *GatewayHandlers) handleSessionSnapshot(ctx context.Context, req Gateway
 	})
 }
 
-// --- tools.list (P2 stub) ---
+// --- tools.list (P3 接入真实 Inventory) ---
 
 func (h *GatewayHandlers) handleToolsList(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
-	// P3 阶段注入真实 tool.Registry 数据。
-	return emit(ctx, out, "tools.list", "final", map[string]any{"tools": []any{}})
+	if h.Inventory == nil {
+		return emit(ctx, out, "tools.list", "final", map[string]any{"tools": []any{}})
+	}
+	entries, err := h.Inventory.List(ctx)
+	if err != nil {
+		return emit(ctx, out, "tools.list", "error", map[string]any{"err": err.Error()})
+	}
+	// 摊平：每个 plugin 的每个 tool 暴露为一个 tool 描述。
+	tools := []map[string]any{}
+	for _, e := range entries {
+		for _, t := range e.Tools {
+			tools = append(tools, map[string]any{
+				"name":        t.Name,
+				"description": t.Description,
+				"risk":        t.Risk,
+				"parameters":  t.Parameters,
+				"plugin":      e.Name,
+				"plugin_kind": e.Kind,
+			})
+		}
+	}
+	return emit(ctx, out, "tools.list", "final", map[string]any{
+		"tools":  tools,
+		"plugin_count": len(entries),
+	})
 }
 
-// --- plugins.list (P2 stub) ---
+// --- plugins.list (P3 接入真实 Inventory) ---
 
 func (h *GatewayHandlers) handlePluginsList(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
-	// P3 阶段注入真实 plugin inventory。
-	return emit(ctx, out, "plugins.list", "final", map[string]any{"plugins": []any{}})
+	if h.Inventory == nil {
+		return emit(ctx, out, "plugins.list", "final", map[string]any{"plugins": []any{}})
+	}
+	entries, err := h.Inventory.List(ctx)
+	if err != nil {
+		return emit(ctx, out, "plugins.list", "error", map[string]any{"err": err.Error()})
+	}
+	return emit(ctx, out, "plugins.list", "final", map[string]any{
+		"plugins": entries,
+		"count":   len(entries),
+	})
 }
 
 // --- llm.call ---
