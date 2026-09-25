@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -31,6 +32,12 @@ type mapSession struct {
 	preview    string
 	messages   []llm.Message
 	usageTotal llm.Usage
+	// v4 §A：events 流。每条事件按 seq 单调递增写入。
+	events []Event
+	// lastSeq 是 events 流的最后分配 seq（-1 表示无事件）。
+	lastSeq int64
+	// projectCache 是 session 内的 ProjectionCache 视图。
+	projectCache *MemoryProjectionCache
 }
 
 // NewMapStore 构造一个空的内存存储。
@@ -51,15 +58,133 @@ func (s *MapStore) Begin(ctx context.Context) (Session, error) {
 	}
 	now := time.Now()
 	s.sessions[id] = &mapSession{
-		id:        id,
-		createdAt: now,
-		updatedAt: now,
+		id:           id,
+		createdAt:    now,
+		updatedAt:    now,
+		lastSeq:      -1,
+		projectCache: NewMemoryProjectionCache(),
 	}
 	return Session{
 		ID:        id,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
+}
+
+// AppendEvent 写入事件到内存 session。返回分配的 seq。
+func (s *MapStore) AppendEvent(ctx context.Context, sid string, ev Event) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return 0, errors.New("store: closed")
+	}
+	sess, ok := s.sessions[sid]
+	if !ok {
+		return 0, ErrNotFound
+	}
+	sess.lastSeq++
+	ev.Sid = sid
+	ev.Seq = sess.lastSeq
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = time.Now()
+	}
+	// 复制 payload，避免调用方修改影响历史。
+	pl := make([]byte, len(ev.Payload))
+	copy(pl, ev.Payload)
+	ev.Payload = pl
+	sess.events = append(sess.events, ev)
+	sess.updatedAt = time.Now()
+	// 投影缓存失效：未来 Project 应基于新事件重放。
+	if sess.projectCache != nil {
+		sess.projectCache.Invalidate(sid)
+	}
+	return sess.lastSeq, nil
+}
+
+// ReadEvents 返回 sid 从 from 之后的事件序列。from=0 表示从头开始。
+func (s *MapStore) ReadEvents(ctx context.Context, sid string, from int64) ([]Event, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, errors.New("store: closed")
+	}
+	sess, ok := s.sessions[sid]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	out := make([]Event, 0, len(sess.events))
+	for _, ev := range sess.events {
+		if ev.Seq >= from {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}
+
+// GetLastSeq 返回 sid 已分配的最大 seq；无事件返回 -1；sid 不存在返回 ErrNotFound。
+func (s *MapStore) GetLastSeq(ctx context.Context, sid string) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return 0, errors.New("store: closed")
+	}
+	sess, ok := s.sessions[sid]
+	if !ok {
+		return 0, ErrNotFound
+	}
+	return sess.lastSeq, nil
+}
+
+// Project 派生 sid 的指定投影。命中 cache 直接返回；未命中从 events 重放。
+func (s *MapStore) Project(ctx context.Context, sid, name string) (ProjectionState, error) {
+	s.mu.RLock()
+	sess, ok := s.sessions[sid]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if sess.projectCache == nil {
+		// 兼容旧 Build（Begin 之前的状态）——补建 cache。
+		s.mu.Lock()
+		sess.projectCache = NewMemoryProjectionCache()
+		s.mu.Unlock()
+	}
+	if cached, ok := sess.projectCache.Get(sid, name); ok {
+		return cached, nil
+	}
+	events := append([]Event{}, sess.events...)
+	set := DefaultProjectorSet()
+	var state ProjectionState
+	switch name {
+	case "messages":
+		msgs := MessagesState{}
+		for _, ev := range events {
+			if err := set.Messages.Apply(ev, &msgs); err != nil {
+				return nil, err
+			}
+		}
+		state = msgs
+	case "usage":
+		u := UsageState{}
+		for _, ev := range events {
+			if err := set.Usage.Apply(ev, &u); err != nil {
+				return nil, err
+			}
+		}
+		state = u
+	case "phase":
+		p := PhaseState("")
+		for _, ev := range events {
+			if err := set.Phase.Apply(ev, &p); err != nil {
+				return nil, err
+			}
+		}
+		state = p
+	default:
+		return nil, fmt.Errorf("store: project: unknown name %q", name)
+	}
+	sess.projectCache.Put(sid, name, state)
+	return state, nil
 }
 
 // Append 将 msg 添加到会话。如果这是第一条用户消息（role=user 且

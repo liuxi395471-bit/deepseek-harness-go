@@ -33,8 +33,9 @@ import (
 //
 // 所有公开方法都可安全并发使用。
 type SQLiteStore struct {
-	db     *sql.DB
-	closed bool
+	db           *sql.DB
+	closed       bool
+	projectCache *sqliteProjectionCache
 }
 
 // NewSQLiteStore 打开（或创建）path 处的 SQLite 数据库并执行模式迁移。
@@ -63,7 +64,10 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: pragma busy_timeout: %w", err)
 	}
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{
+		db:           db,
+		projectCache: &sqliteProjectionCache{cache: NewMemoryProjectionCache()},
+	}, nil
 }
 
 const schemaSQL = `
@@ -86,6 +90,18 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
+
+-- v4 §A.4: events 表——Session 状态变更的不可变记录。messages
+-- 表保留作为兼容层（v3 投影），但驱动源已切到事件流。
+CREATE TABLE IF NOT EXISTS events (
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,
+    type        INTEGER NOT NULL,
+    ts          INTEGER NOT NULL,
+    payload     BLOB NOT NULL,
+    actor       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq);
 `
 
 // Begin 插入新的会话行并返回它。
@@ -317,4 +333,189 @@ func (s *SQLiteStore) Close() error {
 	}
 	s.closed = true
 	return s.db.Close()
+}
+
+// AppendEvent 写入事件到 events 表（v4 §A.3）。seq 由存储按会话
+// 单调递增分配；返回该值。Payload 为空时存 NULL（sqlite 不支持
+// 零长度 BLOB 与 NULL 区分；这里用空字节切片）。
+//
+// 写入后会让该 sid 的全部投影缓存失效（与 MapStore 一致语义）。
+func (s *SQLiteStore) AppendEvent(ctx context.Context, sid string, ev Event) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("store: append_event begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 校验会话存在。
+	var dummy int64
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE id=?`, sid).Scan(&dummy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: append_event lookup: %w", err)
+	}
+
+	// 计算下一个 seq。
+	var nextSeq int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), -1) + 1 FROM events WHERE session_id=?`, sid,
+	).Scan(&nextSeq); err != nil {
+		return 0, fmt.Errorf("store: append_event seq: %w", err)
+	}
+
+	// payload 必须非空——使用空字节切片而非 nil 以保证 BLOB 写入。
+	pl := ev.Payload
+	if pl == nil {
+		pl = []byte{}
+	}
+	ts := ev.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO events(session_id, seq, type, ts, payload, actor)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		sid, nextSeq, int(ev.Type), ts.UnixNano(), pl, ev.Actor,
+	); err != nil {
+		return 0, fmt.Errorf("store: append_event insert: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: append_event commit: %w", err)
+	}
+	// 写后失效该 sid 的缓存。下次 Project 触发重放。
+	s.projectCache.cache.Invalidate(sid)
+	return nextSeq, nil
+}
+
+// ReadEvents 返回 sid 从 from 之后的事件，按 seq 升序。
+func (s *SQLiteStore) ReadEvents(ctx context.Context, sid string, from int64) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT seq, type, ts, payload, actor
+		 FROM events WHERE session_id=? AND seq >= ?
+		 ORDER BY seq ASC`, sid, from,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: read_events: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Event
+	for rows.Next() {
+		var (
+			seq    int64
+			typ    int
+			ts     int64
+			actor  string
+			payload []byte
+		)
+		if err := rows.Scan(&seq, &typ, &ts, &payload, &actor); err != nil {
+			return nil, fmt.Errorf("store: read_events scan: %w", err)
+		}
+		out = append(out, Event{
+			Sid:       sid,
+			Seq:       seq,
+			Type:      EventType(typ),
+			Timestamp: time.Unix(0, ts),
+			Payload:   payload,
+			Actor:     actor,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read_events rows: %w", err)
+	}
+	return out, nil
+}
+
+// GetLastSeq 返回 sid 已分配的最大 seq；sid 不存在返回 ErrNotFound。
+// 无事件时返回 -1（与 COALESCE(MAX(seq), -1) 语义一致）。
+func (s *SQLiteStore) GetLastSeq(ctx context.Context, sid string) (int64, error) {
+	var last int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), -1) FROM events WHERE session_id=?`, sid,
+	).Scan(&last)
+	if err != nil {
+		return 0, fmt.Errorf("store: get_last_seq: %w", err)
+	}
+	// 区分 "sid 不存在" 与 "sid 存在但无事件"。
+	var exists int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM sessions WHERE id=?`, sid,
+	).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("store: get_last_seq exists: %w", err)
+	}
+	return last, nil
+}
+
+// Project 派生 sid 的指定投影（v4 §A.5）。实现用 MemoryProjectionCache。
+// 注意：这是进程级 cache；不同 Store 实例各自独立。
+func (s *SQLiteStore) Project(ctx context.Context, sid, name string) (ProjectionState, error) {
+	return s.projectCache.getOrCompute(sid, name, func() (ProjectionState, error) {
+		// 校验 sid 存在；空 events 不应误判为 unknown session。
+		var exists int
+		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE id=?`, sid).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrNotFound
+			}
+			return nil, fmt.Errorf("store: project lookup: %w", err)
+		}
+		events, err := s.ReadEvents(ctx, sid, 0)
+		if err != nil {
+			return nil, err
+		}
+		set := DefaultProjectorSet()
+		// PhaseProjector 单独处理
+		if name == "messages" {
+			msgs := MessagesState{}
+			for _, ev := range events {
+				if err := set.Messages.Apply(ev, &msgs); err != nil {
+					return nil, err
+				}
+			}
+			return msgs, nil
+		}
+		if name == "usage" {
+			usage := UsageState{}
+			for _, ev := range events {
+				if err := set.Usage.Apply(ev, &usage); err != nil {
+					return nil, err
+				}
+			}
+			return usage, nil
+		}
+		if name == "phase" {
+			phase := PhaseState("")
+			for _, ev := range events {
+				if err := set.Phase.Apply(ev, &phase); err != nil {
+					return nil, err
+				}
+			}
+			return phase, nil
+		}
+		return nil, fmt.Errorf("store: project: unknown name %q", name)
+	})
+}
+
+// projectCache 是 SQLiteStore 内部的 ProjectionCache 适配器。
+// 避免重复实现 MemoryProjectionCache 的全部方法。
+type sqliteProjectionCache struct {
+	cache *MemoryProjectionCache
+}
+
+func (p *sqliteProjectionCache) getOrCompute(sid, name string, compute func() (ProjectionState, error)) (ProjectionState, error) {
+	if s, ok := p.cache.Get(sid, name); ok {
+		return s, nil
+	}
+	s, err := compute()
+	if err != nil {
+		return nil, err
+	}
+	p.cache.Put(sid, name, s)
+	return s, nil
 }

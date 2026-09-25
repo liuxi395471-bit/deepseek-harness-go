@@ -226,3 +226,291 @@ func TestMapStore_PreviewTruncation(t *testing.T) {
 		t.Errorf("Preview = %q, want suffix ellipsis", loaded.Preview)
 	}
 }
+
+// --- v4 §A 事件溯源验收用例 ---
+
+// T1.8.1 长会话 100 轮 → events 表 ≥ 100 条；seq 单调递增。
+func TestStore_AppendEvent_100Rounds(t *testing.T) {
+	s := NewMapStore()
+	defer s.Close()
+	ctx := context.Background()
+	sess, _ := s.Begin(ctx)
+	const rounds = 100
+	for i := 0; i < rounds; i++ {
+		ev := Event{Type: EventUserMessage, Actor: "primary"}
+		if err := ev.MarshalPayload(UserMessagePayload{Content: "msg-" + itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+		seq, err := s.AppendEvent(ctx, sess.ID, ev)
+		if err != nil {
+			t.Fatalf("AppendEvent[%d]: %v", i, err)
+		}
+		if seq != int64(i) {
+			t.Fatalf("seq[%d] = %d, want %d", i, seq, i)
+		}
+	}
+	events, err := s.ReadEvents(ctx, sess.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != rounds {
+		t.Fatalf("got %d events, want %d", len(events), rounds)
+	}
+	last, err := s.GetLastSeq(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last != int64(rounds-1) {
+		t.Errorf("lastSeq = %d, want %d", last, rounds-1)
+	}
+}
+
+// T1.8.2 投影 Messages 与 v3 Append 写入的 messages 表字节级一致。
+func TestProjector_Messages_MatchesV3(t *testing.T) {
+	s := NewMapStore()
+	defer s.Close()
+	ctx := context.Background()
+	sess, _ := s.Begin(ctx)
+
+	// v3 路径：直接 Append
+	v3msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "u1"},
+		{Role: llm.RoleAssistant, Content: "a1"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{
+			ID: "tc1", Type: "function",
+			Function: llm.ToolCallFunc{Name: "echo", Arguments: `{}`},
+		}}},
+		{Role: llm.RoleTool, ToolCallID: "tc1", Name: "echo", Content: "r1"},
+		{Role: llm.RoleAssistant, Content: "done"},
+	}
+	for _, m := range v3msgs {
+		if err := s.Append(ctx, sess.ID, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, _ := s.Load(ctx, sess.ID)
+
+	// v4 路径：构造等价的 events 流
+	s2 := NewMapStore()
+	defer s2.Close()
+	sess2, _ := s2.Begin(ctx)
+	emit := func(typ EventType, pl any) {
+		ev := Event{Type: typ, Actor: "primary"}
+		if err := ev.MarshalPayload(pl); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s2.AppendEvent(ctx, sess2.ID, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit(EventSystemPrompt, SystemPromptPayload{Content: "sys"})
+	emit(EventUserMessage, UserMessagePayload{Content: "u1"})
+	emit(EventAssistantMessage, AssistantMessagePayload{
+		Message: llm.Message{Role: llm.RoleAssistant, Content: "a1"},
+	})
+	emit(EventToolCall, ToolCallPayload{ID: "tc1", Name: "echo", Arguments: `{}`})
+	emit(EventToolResult, ToolResultPayload{ID: "tc1", Name: "echo", Result: "r1"})
+	emit(EventAssistantMessage, AssistantMessagePayload{
+		Message: llm.Message{Role: llm.RoleAssistant, Content: "done"},
+	})
+
+	state, err := s2.Project(ctx, sess2.ID, "messages")
+	if err != nil {
+		t.Fatalf("Project messages: %v", err)
+	}
+	projected, ok := state.(MessagesState)
+	if !ok {
+		t.Fatalf("bad state type %T", state)
+	}
+
+	if len(projected) != len(loaded.Messages) {
+		t.Fatalf("len mismatch: v3=%d, v4=%d", len(loaded.Messages), len(projected))
+	}
+	for i := range projected {
+		if !msgEqual(projected[i], loaded.Messages[i]) {
+			t.Errorf("msg[%d] differ:\n  v3: %+v\n  v4: %+v", i, loaded.Messages[i], projected[i])
+		}
+	}
+}
+
+// T1.8.3 cache 命中：第二次 Project 不应触发重放。
+func TestProjectionCache_HitRate(t *testing.T) {
+	c := NewMemoryProjectionCache()
+	// 第一次 Put 后 Get 命中
+	c.Put("sid1", "messages", MessagesState{llm.Message{Role: llm.RoleSystem, Content: "x"}})
+	s, ok := c.Get("sid1", "messages")
+	if !ok {
+		t.Fatal("expected hit")
+	}
+	if len(s.(MessagesState)) != 1 {
+		t.Fatalf("bad state: %+v", s)
+	}
+	// 未命中的 projection name
+	if _, ok := c.Get("sid1", "usage"); ok {
+		t.Fatal("usage should not exist yet")
+	}
+	// Invalidate 后 Get 找不到
+	c.Invalidate("sid1")
+	if _, ok := c.Get("sid1", "messages"); ok {
+		t.Fatal("after invalidate should miss")
+	}
+}
+
+// T1.8.4 多 session 并发：各 sid 自身 seq 单调，互不干扰。
+func TestStore_AppendEvent_ConcurrentSessions(t *testing.T) {
+	s := NewMapStore()
+	defer s.Close()
+	ctx := context.Background()
+	const sessions = 8
+	const eventsPerSession = 50
+
+	var wg sync.WaitGroup
+	for sIdx := 0; sIdx < sessions; sIdx++ {
+		wg.Add(1)
+		go func(sIdx int) {
+			defer wg.Done()
+			sess, err := s.Begin(ctx)
+			if err != nil {
+				t.Errorf("Begin: %v", err)
+				return
+			}
+			for i := 0; i < eventsPerSession; i++ {
+				ev := Event{Type: EventUserMessage}
+				_ = ev.MarshalPayload(UserMessagePayload{Content: "x"})
+				_, err := s.AppendEvent(ctx, sess.ID, ev)
+				if err != nil {
+					t.Errorf("AppendEvent sid=%d i=%d: %v", sIdx, i, err)
+					return
+				}
+			}
+		}(sIdx)
+	}
+	wg.Wait()
+
+	// 校验每个 sid 的 seq 单调且互不干扰。
+	rows, err := s.List(ctx, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != sessions {
+		t.Fatalf("List len = %d, want %d", len(rows), sessions)
+	}
+	for _, r := range rows {
+		evs, err := s.ReadEvents(ctx, r.ID, 0)
+		if err != nil {
+			t.Errorf("ReadEvents %s: %v", r.ID, err)
+			continue
+		}
+		if len(evs) != eventsPerSession {
+			t.Errorf("sid=%s got %d events, want %d", r.ID, len(evs), eventsPerSession)
+		}
+		for i := 1; i < len(evs); i++ {
+			if evs[i].Seq != evs[i-1].Seq+1 {
+				t.Errorf("sid=%s seq gap: %d -> %d", r.ID, evs[i-1].Seq, evs[i].Seq)
+			}
+		}
+		last, _ := s.GetLastSeq(ctx, r.ID)
+		if last != int64(eventsPerSession-1) {
+			t.Errorf("sid=%s lastSeq=%d, want %d", r.ID, last, eventsPerSession-1)
+		}
+	}
+}
+
+// T1.8.5 v3 Append 在 EventStore 上仍工作；不破坏既有 v3 行为。
+//   （兼容层职责：Append 路径不变；事件流是可选的。）
+func TestStore_LegacyAppendStillWorks(t *testing.T) {
+	s := NewMapStore()
+	defer s.Close()
+	ctx := context.Background()
+	sess, _ := s.Begin(ctx)
+	if err := s.Append(ctx, sess.ID, llm.Message{Role: llm.RoleSystem, Content: "sys"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(ctx, sess.ID, llm.Message{Role: llm.RoleUser, Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 2 {
+		t.Fatalf("legacy Append lost messages: %+v", loaded.Messages)
+	}
+}
+
+// T1.8.6 AppendEvent 写入后，Project 立即看到新事件；Invalidate 强制重放。
+func TestStore_AppendEvent_ThenProject(t *testing.T) {
+	s := NewMapStore()
+	defer s.Close()
+	ctx := context.Background()
+	sess, _ := s.Begin(ctx)
+
+	emit := func(typ EventType, pl any) {
+		ev := Event{Type: typ}
+		if err := ev.MarshalPayload(pl); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AppendEvent(ctx, sess.ID, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit(EventSystemPrompt, SystemPromptPayload{Content: "sys"})
+	emit(EventUserMessage, UserMessagePayload{Content: "u1"})
+	state, _ := s.Project(ctx, sess.ID, "messages")
+	msgs := state.(MessagesState)
+	if len(msgs) != 2 {
+		t.Fatalf("got %d msgs, want 2: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != llm.RoleSystem || msgs[0].Content != "sys" {
+		t.Errorf("msgs[0] = %+v", msgs[0])
+	}
+	if msgs[1].Role != llm.RoleUser || msgs[1].Content != "u1" {
+		t.Errorf("msgs[1] = %+v", msgs[1])
+	}
+}
+
+// --- helpers ---
+
+// msgEqual 比较两条消息的语义相等（role + content + tool fields）。
+// 用途：v3 Append 与 v4 投影结果应字节级一致（除 JSON 序列化差异）。
+func msgEqual(a, b llm.Message) bool {
+	if a.Role != b.Role || a.Content != b.Content || a.ToolCallID != b.ToolCallID || a.Name != b.Name {
+		return false
+	}
+	if len(a.ToolCalls) != len(b.ToolCalls) {
+		return false
+	}
+	for i := range a.ToolCalls {
+		if a.ToolCalls[i].ID != b.ToolCalls[i].ID ||
+			a.ToolCalls[i].Type != b.ToolCalls[i].Type ||
+			a.ToolCalls[i].Function.Name != b.ToolCalls[i].Function.Name ||
+			a.ToolCalls[i].Function.Arguments != b.ToolCalls[i].Function.Arguments {
+			return false
+		}
+	}
+	return true
+}
+
+// itoa 避免 strconv import（小型 helper）。
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	neg := i < 0
+	if neg {
+		i = -i
+	}
+	var buf [20]byte
+	pos := len(buf)
+	for i > 0 {
+		pos--
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		pos--
+		buf[pos] = '-'
+	}
+	return string(buf[pos:])
+}

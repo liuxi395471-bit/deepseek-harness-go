@@ -79,6 +79,57 @@ type Store interface {
 	Close() error
 }
 
+// EventStore 是 v4 §A 引入的事件溯源扩展接口。实现 AppendEvent/
+// ReadEvents/GetLastSeq 三个方法，向 AppendEvent 调用方提供完整的
+// Session 事件序列；GetLastSeq 返回当前已分配的最大 seq（用于断点
+// 续传或投影重建时的 since 起点）。
+//
+// 兼容策略：v3 Store 的实现未必支持事件流；调用方用 AsEventStore
+// 做类型断言降级，未实现时回退到 v3 Load + Append 路径。
+type EventStore interface {
+	Store
+
+	// AppendEvent 把事件追加到 sid 对应会话的事件流。返回分配的
+	// seq（从 0 开始，单调递增）。若 id 不存在返回 ErrNotFound。
+	AppendEvent(ctx context.Context, sid string, ev Event) (int64, error)
+
+	// ReadEvents 返回 sid 的事件序列，from 起始 seq 之后的事件按 seq
+	// 升序排列。from=0 表示从头开始。事件类型取决于实现，可能在
+	// Append 之外补出 system_prompt 等额外事件；调用方应按 Event.Type
+	// 分发。找不到 sid 返回 ErrNotFound。
+	ReadEvents(ctx context.Context, sid string, from int64) ([]Event, error)
+
+	// GetLastSeq 返回 sid 已分配的最大 seq；若 sid 未知返回
+	// ErrNotFound。AppendEvent 之前调用得到 -1（无事件）；AppendEvent
+	// 之后得到该 sid 当前的最高 seq。
+	GetLastSeq(ctx context.Context, sid string) (int64, error)
+}
+
+// AsEventStore 把 s 转换为 EventStore；s 未实现事件流接口时返回
+// (nil, false)，调用方应回退到 v3 Load/Append 路径。
+func AsEventStore(s Store) (EventStore, bool) {
+	if s == nil {
+		return nil, false
+	}
+	if es, ok := s.(EventStore); ok {
+		return es, true
+	}
+	return nil, false
+}
+
+// ProjectionStore 是 v4 §A.5 引入的可选接口：让 Store 持有自己的
+// 投影缓存，使 cache 命中由 Store 内部维护，避免调用方每次手动
+// 传 cache。v4 阶段不强制实现；Runner 在 EventStore 提供时自动使用，
+// 否则构造一个进程内的 MemoryProjectionCache。
+type ProjectionStore interface {
+	EventStore
+
+	// Project 派生 sid 的指定投影。name 为 "messages" / "usage" /
+	// "phase" 等。命中 cache 时直接返回；未命中则从 events 重放
+	// 并 Put 回 cache。
+	Project(ctx context.Context, sid, name string) (ProjectionState, error)
+}
+
 // previewLen 是预览的最大长度（rune 数）。
 const previewLen = 80
 
