@@ -85,7 +85,7 @@ func init() {
 
 // version 在发布时通过 -ldflags 注入。默认值让它在开发构建中
 // 一目了然。
-var version = "3.0.0-dev"
+var version = "4.0.0-dev"
 
 func main() {
 	flag.Parse()

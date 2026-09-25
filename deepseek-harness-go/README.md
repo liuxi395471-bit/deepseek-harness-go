@@ -2,8 +2,8 @@
 
 参照 `deepseek-harness-java/` 的核心抽象用 Go 实现的 **ReAct agent harness**。当前对应 [PLAN.md](./docs/PLAN.md)（v2 收官）与 [PLAN-v3.md](./docs/PLAN-v3.md)（v3 实施中）。
 
-**当前版本**：v2.0.2（2026-09-16）—— v2 全部 TODO 完成，含 plugin gRPC、Anthropic native SSE、MCP stdio Session。
-**下一版**：v3.0.0 —— Skill loader + Sub-agent + Obs OTel + Compaction + Audit + Sandbox + Ollama/Gemini。
+**当前版本**：v4.0.0（2026-09-26）—— v4 全部 TODO 完成，含统一 Gateway SSE、插件库存视图、会话事件溯源、测试用例库。
+**下一版**：v4.x —— LRU 缓存、tools.list 分页。
 
 ---
 
@@ -14,6 +14,9 @@
   - OpenAI 兼容 SSE ✅（`internal/stream/`）
   - Anthropic Messages native SSE ✅（`internal/llm/anthropic/stream.go`，v2.0.1+）
 - **HTTP+SSE 服务**：`/api/agent/message`（阻塞）+ `/api/agent/stream`（SSE）+ `/api/sessions` + `/api/sessions/{id}` + `/healthz`。
+- **统一 Gateway SSE**（v4.0.0+）：`POST /api/gateway/stream` 单入口；内置 source：`events.subscribe` / `session.send` / `session.snapshot` / `tools.list` / `plugins.list` / `llm.call`。
+- **插件库存视图**（v4.0.0+）：`plugin.Inventory` 聚合本地工具 + gRPC 远端插件；风险分级（low/medium/high）；通过 `tools.list` / `plugins.list` 暴露。
+- **会话事件溯源**（v4.0.0+）：`store.EventStore` 把 Session 拆为不可变 events；`MemoryProjectionCache` 派生 Messages / Usage / Phase 投影。
 - **Session 持久化**：`MapStore`（内存）+ `SQLiteStore`（默认 `~/.dsh/sessions.db`，pure-Go `modernc.org/sqlite`）；export/import/branch。
 - **Approval + Shell**：4 种 Approver（Noop/AllowList/Terminal/HTTP）；shell 工具受 allowlist + workspace pathguard + symlink fail-closed。
 - **gRPC 插件系统**（v2.0.1+）：`./dsh -plugin ./plugin-echo.exe`；proto 在 `internal/plugin/proto/`；in-tree `cmd/plugin-echo/` 示例。
@@ -135,6 +138,50 @@ dsh> 读 workspace/notes/holiday.txt
 | `agent` | `temperature` | `DSH_AGENT_TEMPERATURE` | `0.2` |
 | `agent` | `system-prompt` | `DSH_AGENT_SYSTEM_PROMPT` | `""`（内置中文模板） |
 | `agent` | `debug` | `DSH_AGENT_DEBUG` | `false` |
+
+---
+
+## Gateway SSE 调用示例（v4.0.0+）
+
+启动服务端：
+
+```bash
+DSH_SERVER_AUTH_TOKEN=tok ./dsh -config harness.example.yml -serve
+```
+
+列出可用工具（暴露本地 + gRPC 插件）：
+
+```bash
+curl -X POST http://127.0.0.1:7777/api/gateway/stream \
+  -H "Authorization: Bearer tok" \
+  -d '{"source":"tools.list","params":{}}'
+```
+
+返回 SSE 帧序列，每帧 `data: {json}\n\n`：
+
+```json
+{"source":"tools.list","type":"final","payload":{"plugin_count":3,"tools":[{"name":"shell","plugin_kind":"local","risk":"high",...}]}}
+```
+
+发送单条 prompt 并接收事件流：
+
+```bash
+curl -N -X POST http://127.0.0.1:7777/api/gateway/stream \
+  -H "Authorization: Bearer tok" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"session.send","params":{"prompt":"hello"}}'
+```
+
+订阅会话事件（事件溯源 P1）：
+
+```bash
+curl -N -X POST http://127.0.0.1:7777/api/gateway/stream \
+  -H "Authorization: Bearer tok" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"events.subscribe","params":{"sid":"abc123","since_seq":0}}'
+```
+
+完整 source 列表与迁移说明见 [docs/RELEASE-v4.md](./docs/RELEASE-v4.md)。
 
 ---
 
