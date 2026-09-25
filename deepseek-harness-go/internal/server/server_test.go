@@ -297,3 +297,202 @@ var (
 	_ = bytes.NewReader
 	_ = tool.NewRegistry
 )
+
+// --- v4 §B Gateway 验收用例 ---
+
+// T2.5.1 /api/gateway/stream session.send 完成返回 final 帧
+func TestGateway_SessionSend_FinalFrame(t *testing.T) {
+	srv := newServer(t, newFakeRunner(), nil)
+	body := strings.NewReader(`{"source":"session.send","params":{"prompt":"hi"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/gateway/stream", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := do(t, srv, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+	// 解析 SSE 帧：每行 data: {...}\n\n
+	frames := parseSSEFrames(t, rec.Body.String())
+	if len(frames) == 0 {
+		t.Fatal("no frames emitted")
+	}
+	var hasFinal bool
+	for _, f := range frames {
+		if f["type"] != "final" {
+			continue
+		}
+		payload, _ := f["payload"].(map[string]any)
+		if payload == nil {
+			continue
+		}
+		if payload["stop_reason"] == "no_tool_calls" {
+			hasFinal = true
+			if payload["rounds"] != float64(1) {
+				t.Errorf("rounds = %v, want 1", payload["rounds"])
+			}
+		}
+	}
+	if !hasFinal {
+		t.Errorf("no final frame with stop_reason; frames = %+v", frames)
+	}
+}
+
+// T2.5.2 events.subscribe 通过 Gateway 拿到 ≥ 1 帧
+func TestGateway_EventsSubscribe(t *testing.T) {
+	st := store.NewMapStore()
+	ctx := context.Background()
+	sess, _ := st.Begin(ctx)
+	ev := store.Event{Type: store.EventUserMessage}
+	_ = ev.MarshalPayload(store.UserMessagePayload{Content: "hi"})
+	if _, err := st.AppendEvent(ctx, sess.ID, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newServer(t, newFakeRunner(), st)
+	body := strings.NewReader(`{"source":"events.subscribe","params":{"sid":"` + sess.ID + `"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/gateway/stream", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := do(t, srv, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	frames := parseSSEFrames(t, rec.Body.String())
+	if len(frames) < 2 {
+		t.Fatalf("got %d frames, want >= 2: %+v", len(frames), frames)
+	}
+	var sawDelta bool
+	for _, f := range frames {
+		if f["type"] == "delta" {
+			sawDelta = true
+		}
+	}
+	if !sawDelta {
+		t.Errorf("no delta frame in: %+v", frames)
+	}
+}
+
+// T2.5.3 session.snapshot 拿到 messages 投影
+func TestGateway_SessionSnapshot(t *testing.T) {
+	st := store.NewMapStore()
+	ctx := context.Background()
+	sess, _ := st.Begin(ctx)
+	if err := st.Append(ctx, sess.ID, llm.Message{Role: llm.RoleSystem, Content: "sys"}); err != nil {
+		t.Fatal(err)
+	}
+	srv := newServer(t, newFakeRunner(), st)
+	body := strings.NewReader(`{"source":"session.snapshot","params":{"sid":"` + sess.ID + `","projection":"messages"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/gateway/stream", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := do(t, srv, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	frames := parseSSEFrames(t, rec.Body.String())
+	if len(frames) == 0 {
+		t.Fatal("no frames")
+	}
+	final := frames[len(frames)-1]
+	if final["type"] != "final" {
+		t.Errorf("last frame type = %v", final["type"])
+	}
+}
+
+// T2.5.4 unknown source → error 帧
+func TestGateway_UnknownSource(t *testing.T) {
+	srv := newServer(t, newFakeRunner(), nil)
+	body := strings.NewReader(`{"source":"nope","params":{}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/gateway/stream", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := do(t, srv, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	frames := parseSSEFrames(t, rec.Body.String())
+	var sawErr bool
+	for _, f := range frames {
+		if f["type"] == "error" {
+			sawErr = true
+		}
+	}
+	if !sawErr {
+		t.Errorf("expected error frame for unknown source; got %+v", frames)
+	}
+}
+
+// T2.5.5 tools.list / plugins.list stub 返回空数组
+func TestGateway_Stubs(t *testing.T) {
+	srv := newServer(t, newFakeRunner(), nil)
+	for _, src := range []string{"tools.list", "plugins.list"} {
+		t.Run(src, func(t *testing.T) {
+			body := strings.NewReader(`{"source":"` + src + `","params":{}}`)
+			req := httptest.NewRequest(http.MethodPost, "/api/gateway/stream", body)
+			req.Header.Set("Authorization", "Bearer secret-token")
+			rec := do(t, srv, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			frames := parseSSEFrames(t, rec.Body.String())
+			if len(frames) == 0 || frames[len(frames)-1]["type"] != "final" {
+				t.Errorf("expected final frame: %+v", frames)
+			}
+		})
+	}
+}
+
+// T2.5.6 Router.Register + Sources + Dispatch 覆盖错误分支
+func TestRouter_UnknownSource(t *testing.T) {
+	r := NewRouter()
+	_, ok := r.Sources(), []string{}
+	_ = ok
+	prev := r.Register("x", func(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
+		out <- GatewayEvent{Source: "x", Type: "delta"}
+		return nil
+	})
+	if prev != nil {
+		t.Error("first register should have no previous")
+	}
+	err := r.Dispatch(context.Background(), GatewayRequest{Source: "missing"}, nil)
+	if err == nil {
+		t.Error("expected ErrUnknownSource")
+	}
+}
+
+// T2.5.7 emit 工具：ctx cancel 时返回错误
+func TestGateway_EmitCancelledCtx(t *testing.T) {
+	out := make(chan GatewayEvent)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := emit(ctx, out, "x", "delta", map[string]any{"a": 1})
+	if err == nil {
+		t.Error("expected ctx.Err()")
+	}
+}
+
+// --- helpers ---
+
+// parseSSEFrames 把 SSE 响应体拆为帧序列，每帧是一个 json map。
+func parseSSEFrames(t *testing.T, body string) []map[string]any {
+	t.Helper()
+	out := []map[string]any{}
+	for _, raw := range strings.Split(body, "\n\n") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		// 跳过 event: 头部，只取 data: 行
+		for _, line := range strings.Split(raw, "\n") {
+			if strings.HasPrefix(line, "data: ") {
+				payload := strings.TrimPrefix(line, "data: ")
+				var m map[string]any
+				if err := json.Unmarshal([]byte(payload), &m); err != nil {
+					t.Errorf("bad JSON in SSE frame: %v (payload=%s)", err, payload)
+					continue
+				}
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}

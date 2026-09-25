@@ -26,6 +26,7 @@ import (
 	"sync"
 
 	"deepseek-harness-go/internal/agent"
+	"deepseek-harness-go/internal/llm"
 	"deepseek-harness-go/internal/store"
 )
 
@@ -42,6 +43,12 @@ type Server struct {
 	cfg    Config
 	runner agent.StreamingRunner
 	store  store.Store
+	client llm.Client // v4 §B.6: for llm.call gateway source
+
+	// v4 §B: gateway router + handlers. 由 setGateway 在 Server 启动
+	// 时初始化。允许 nil（兼容仅使用旧端点的 server）。
+	router *Router
+	gw     *GatewayHandlers
 
 	// 每会话锁；防止对同一 id 并发调用 RunStream。
 	sessMu  sync.Mutex
@@ -51,12 +58,30 @@ type Server struct {
 }
 
 // New 构造一个 Server。runner 是要派发到的 agent；store 用于管理会话生命周期。
+// client 用于 Gateway llm.call source——允许传 nil（仅旧端点可用）。
 func New(cfg Config, runner agent.StreamingRunner, st store.Store) *Server {
-	return &Server{
+	s := &Server{
 		cfg:     cfg,
 		runner:  runner,
 		store:   st,
 		sessRun: make(map[string]struct{}),
+	}
+	// 默认构造 Gateway handlers + router；Router 内部空 map，
+	// 调用 RegisterAll 后才可调用 Dispatch。Server 在 Handler() 时
+	// 决定是否注册 /api/gateway/stream 路由（始终注册，handler 拒
+	// 绝时返回 404 即可）。
+	s.gw = &GatewayHandlers{Runner: runner, Store: st}
+	s.router = NewRouter()
+	s.gw.RegisterAll(s.router)
+	return s
+}
+
+// SetLLMClient 设置用于 llm.call source 的 client。可选；缺省时
+// llm.call 返回 503。
+func (s *Server) SetLLMClient(c llm.Client) {
+	s.client = c
+	if s.gw != nil {
+		s.gw.Client = c
 	}
 }
 
@@ -86,11 +111,85 @@ func (s *Server) release(id string) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/api/gateway/stream", s.handleGatewayStream)
 	mux.HandleFunc("/api/agent/message", s.handleMessage)
 	mux.HandleFunc("/api/agent/stream", s.handleStream)
 	mux.HandleFunc("/api/sessions", s.handleListSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSession)
 	return s.bearerAuth(mux)
+}
+
+// handleGatewayStream 处理 POST /api/gateway/stream —— 统一 SSE 入口。
+// 请求体：GatewayRequest。响应：text/event-stream，每帧 data: {json}。
+//
+// 行为：
+//   - 解析请求失败 → 400
+//   - 未知 source → 写一帧 error 后关流
+//   - 已知 source → 调 handler 直到返回 / ctx cancel
+//   - ctx cancel（client disconnect）→ handler goroutine 退出 < 100ms
+func (s *Server) handleGatewayStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.router == nil {
+		http.Error(w, "gateway unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	var req GatewayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Source == "" {
+		http.Error(w, "source required", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	if s.cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, secondsToDuration(s.cfg.Timeout))
+		defer cancel()
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	out := make(chan GatewayEvent, 256)
+	dispatchDone := make(chan error, 1)
+	go func() {
+		dispatchDone <- s.router.Dispatch(ctx, req, out)
+		close(out)
+	}()
+
+	defer func() {
+		// 兜底：强制退出 dispatch goroutine。
+		go func() { <-dispatchDone }()
+	}()
+
+	for ev := range out {
+		if err := writeGatewayFrame(w, flusher, ev); err != nil {
+			// Client 已断开 → 直接退出（dispatch goroutine 会因 ctx
+			// 取消或 channel 写满而返回）。
+			return
+		}
+	}
+	if err := <-dispatchDone; err != nil {
+		// 把最终错误作为 error 帧写出。
+		_ = writeGatewayFrame(w, flusher, GatewayEvent{
+			Source: req.Source,
+			Type:   "error",
+			Payload: json.RawMessage(mustJSON(map[string]any{"err": err.Error()})),
+		})
+	}
 }
 
 // bearerAuth 为 next 包装 Bearer token 校验。/healthz 例外放行。
