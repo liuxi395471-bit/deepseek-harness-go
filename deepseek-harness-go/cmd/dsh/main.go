@@ -44,6 +44,7 @@ import (
 	"deepseek-harness-go/internal/audit"
 	"deepseek-harness-go/internal/compaction"
 	"deepseek-harness-go/internal/config"
+	"deepseek-harness-go/internal/credentials"
 	"deepseek-harness-go/internal/obs"
 	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/runtime"
@@ -117,6 +118,17 @@ func main() {
 				log.Printf("[dsh] obs close: %v", err)
 			}
 		}()
+	}
+
+	// v5 P5-4: 凭据抽象。从 env + 可选 JSON 文件解析 cfg.LLM.APIKey 与
+	// cfg.Channels[].APIKey。文件不存在时仍走 env 单源；所有来源都查不到
+	// 也不致命（LLM Client 构造时 cfg.LLM.APIKey 仍可能是空字符串 → 后续 Validate）。
+	resolveLLMAPIKey(&cfg.LLM)
+	if cfg.Credentials.File != "" {
+		credFile = cfg.Credentials.File
+	}
+	for i := range cfg.Channels {
+		resolveChannelAPIKey(&cfg.Channels[i])
 	}
 
 	// v3 §G：provider 路由（openai | anthropic | ollama | gemini）。
@@ -521,4 +533,53 @@ func waitForPlugin(ctx context.Context, addr string, timeout time.Duration) erro
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("plugin %s not ready after %s", addr, timeout)
+}
+
+// credFile 是全局缓存的凭据文件路径；首次 resolveChannelAPIKey 时初始化。
+var credFile string
+
+// initCredProvider 构造 Chained(Env + File)。
+// 失败回退到只含 Env 的 Provider；零开销。
+func initCredProvider() *credentials.Chained {
+	providers := []credentials.Provider{credentials.NewEnvProvider()}
+	if credFile != "" {
+		if fp, err := credentials.NewFileProvider(credFile); err == nil {
+			providers = append(providers, fp)
+		} else {
+			log.Printf("[dsh] credentials: file %s: %v (env-only)", credFile, err)
+		}
+	}
+	return credentials.NewChained(providers...)
+}
+
+// resolveLLMAPIKey 把 cfg.LLM.APIKey 通过 Chained 解析；cfg.LLM.APIKey
+// 已设置时跳过（保留用户显式覆盖）。解析到空则保留原值。
+func resolveLLMAPIKey(cfg *config.LLMConfig) {
+	if cfg.APIKey != "" {
+		return
+	}
+	cp := initCredProvider()
+	v, err := cp.Resolve(context.Background(), credentials.Ref{Name: "deepseek-api-key"})
+	if err == nil {
+		cfg.APIKey = v
+	}
+}
+
+// resolveChannelAPIKey 用 channel code 推断 ref 名。
+func resolveChannelAPIKey(ch *config.ChannelConfig) {
+	if ch.APIKey != "" {
+		return
+	}
+	cp := initCredProvider()
+	name := ch.Code
+	if name == "" {
+		name = "channel"
+	}
+	v, err := cp.Resolve(context.Background(), credentials.Ref{
+		Name: name + "-api-key",
+		Env:  "", // 由 EnvProvider 自动 UPPER_SNAKE 拼接
+	})
+	if err == nil {
+		ch.APIKey = v
+	}
 }
