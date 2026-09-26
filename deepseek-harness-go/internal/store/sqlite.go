@@ -36,11 +36,28 @@ type SQLiteStore struct {
 	db           *sql.DB
 	closed       bool
 	projectCache *sqliteProjectionCache
+	// lease 是 v5 P5-1 引入的会话写租约。Append / AppendEvent 入口
+	// 通过它获取单写者语义；nil = NoopLease（兼容 v4 行为）。
+	lease Lease
+}
+
+// SQLiteOption 配置 NewSQLiteStoreWithOptions 的可选参数。
+type SQLiteOption func(*SQLiteStore)
+
+// WithLease 注入自定义 Lease。nil = NoopLease（默认）。
+func WithLease(l Lease) SQLiteOption {
+	return func(s *SQLiteStore) { s.lease = l }
 }
 
 // NewSQLiteStore 打开（或创建）path 处的 SQLite 数据库并执行模式迁移。
-// 允许使用路径 ":memory:"（测试用内存库）。
+// 允许使用路径 ":memory:"（测试用内存库）。v5 起内部默认装配 NoopLease；
+// 如需 MemoryLease，请用 NewSQLiteStoreWithOptions。
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
+	return NewSQLiteStoreWithOptions(path)
+}
+
+// NewSQLiteStoreWithOptions 同 NewSQLiteStore，并应用一组选项。
+func NewSQLiteStoreWithOptions(path string, opts ...SQLiteOption) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("store: open %q: %w", path, err)
@@ -64,10 +81,18 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: pragma busy_timeout: %w", err)
 	}
-	return &SQLiteStore{
+	s := &SQLiteStore{
 		db:           db,
 		projectCache: &sqliteProjectionCache{cache: NewMemoryProjectionCache()},
-	}, nil
+		lease:        NoopLease{},
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.lease == nil {
+		s.lease = NoopLease{}
+	}
+	return s, nil
 }
 
 const schemaSQL = `
@@ -121,7 +146,15 @@ func (s *SQLiteStore) Begin(ctx context.Context) (Session, error) {
 }
 
 // Append 以下一个 seq 值插入新的消息行。
+//
+// v5 P5-1 起：入口处获取 sid 写租约；保证同 sid 的 Append + AppendEvent
+// 不出现 seq 抢占错乱。Lease nil = NoopLease，向后兼容。
 func (s *SQLiteStore) Append(ctx context.Context, id string, msg llm.Message) error {
+	handle, err := s.lease.Acquire(ctx, id, "append-message")
+	if err != nil {
+		return err
+	}
+	defer handle.Release()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: append begin: %w", err)
@@ -340,7 +373,14 @@ func (s *SQLiteStore) Close() error {
 // 零长度 BLOB 与 NULL 区分；这里用空字节切片）。
 //
 // 写入后会让该 sid 的全部投影缓存失效（与 MapStore 一致语义）。
+//
+// v5 P5-1 起：入口处获取 sid 写租约。
 func (s *SQLiteStore) AppendEvent(ctx context.Context, sid string, ev Event) (int64, error) {
+	handle, err := s.lease.Acquire(ctx, sid, "append-event")
+	if err != nil {
+		return 0, err
+	}
+	defer handle.Release()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("store: append_event begin: %w", err)
