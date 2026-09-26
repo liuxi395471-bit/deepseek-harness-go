@@ -58,3 +58,21 @@ shell:
   enabled: false         # 装配 shell 工具（DESIGN-v2 §C.3 + v3 §F.4）
   allowlist: []          # 允许的命令；空 = 拒绝一切
   timeout: 30s
+
+# ---- DESIGN-v5 新增配置（可选；不写等价关闭） ----
+
+channels:                # v5 P5-3：多 LLM 渠道注册表
+  - code: primary        # 单条渠道的 code；-channel primary 切换
+    provider: openai     # openai | anthropic | ollama | gemini
+    base-url: <your-base-url>
+    model: <your-model>
+
+credentials:             # v5 P5-4：凭据来源
+  file: ""               # JSON 文件路径（空 = 仅 env）
+
+approval:                # v5 P5-5：审批矩阵
+  matrix-path: ""        # YAML 文件路径（当前使用内置默认；空 = 关闭）
+
+hooks:                   # v5 P5-6：工具执行钩子占位
+  pre-tool-use: []
+  post-tool-use: []
