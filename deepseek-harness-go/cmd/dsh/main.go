@@ -246,6 +246,10 @@ func main() {
 	tracker := usage.NewTracker(usage.PriceMap{}, "USD")
 	_ = tracker
 
+	// v5 P5-2: 进程内 token 计量域（多 session 累计 + cache/reasoning）。
+	meter := usage.NewMemoryMeter()
+	runner.Meter = meter
+
 	// CLI 标志优先于配置；即使 cfg server.enabled 为 false，-serve 也
 	// 隐含服务器模式（缺少认证配置时会给出警告）。
 	if *serveFlag {
@@ -253,7 +257,7 @@ func main() {
 			log.Printf("[dsh] warning: -serve given but cfg.server.enabled=false; forcing on")
 			cfg.Server.Enabled = true
 		}
-		runServer(rootCtx, runner, st, cfg, pluginClients)
+		runServer(rootCtx, runner, st, meter, cfg, pluginClients)
 		return
 	}
 
@@ -356,7 +360,7 @@ func openStore(ctx context.Context, cfg config.Config) (store.Store, error) {
 }
 
 // runServer 在 HTTP 监听器上阻塞，直到 ctx 被取消。
-func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, cfg config.Config, pluginClients []*plugin.Client) {
+func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, meter usage.Meter, cfg config.Config, pluginClients []*plugin.Client) {
 	if strings.TrimSpace(cfg.Server.AuthToken) == "" {
 		log.Fatalf("[dsh] server: cfg.server.auth-token (DSH_SERVER_AUTH_TOKEN) must be set before -serve")
 	}
@@ -379,6 +383,8 @@ func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, cf
 	}
 	srv.SetInventory(combined)
 	srv.SetLLMClient(runner.Client)
+	srv.SetMeter(meter)
+	runner.Meter = meter
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,

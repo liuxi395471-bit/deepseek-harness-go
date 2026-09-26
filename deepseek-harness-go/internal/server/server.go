@@ -29,6 +29,7 @@ import (
 	"deepseek-harness-go/internal/llm"
 	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/store"
+	usagemeter "deepseek-harness-go/internal/usage"
 )
 
 // Config 是服务器的运行时配置（config.ServerConfig 的子集）。
@@ -41,11 +42,12 @@ type Config struct {
 
 // Server 将 HTTP 路由与 Runner 和 Store 关联起来。
 type Server struct {
-	cfg    Config
-	runner agent.StreamingRunner
-	store  store.Store
-	client llm.Client     // v4 §B.6: for llm.call gateway source
-	inv    plugin.Inventory // v4 §C: for tools.list / plugins.list
+	cfg     Config
+	runner  agent.StreamingRunner
+	store   store.Store
+	client  llm.Client      // v4 §B.6: for llm.call gateway source
+	inv     plugin.Inventory // v4 §C: for tools.list / plugins.list
+	meter   usagemeter.Meter  // v5 P5-2: for usage.meter / usage.bulk
 
 	// v4 §B: gateway router + handlers. 由 setGateway 在 Server 启动
 	// 时初始化。允许 nil（兼容仅使用旧端点的 server）。
@@ -93,6 +95,14 @@ func (s *Server) SetInventory(inv plugin.Inventory) {
 	s.inv = inv
 	if s.gw != nil {
 		s.gw.Inventory = inv
+	}
+}
+
+// SetMeter 设置用于 usage.meter / usage.bulk source 的 token 计量
+// 服务（v5 P5-2）。可选；缺省时返回 NoopMeter（零值）。
+func (s *Server) SetMeter(m usagemeter.Meter) {
+	if s.gw != nil {
+		s.gw.Meter = m
 	}
 }
 

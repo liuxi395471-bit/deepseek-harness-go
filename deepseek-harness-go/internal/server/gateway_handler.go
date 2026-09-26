@@ -22,6 +22,7 @@ import (
 	"deepseek-harness-go/internal/llm"
 	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/store"
+	usagemeter "deepseek-harness-go/internal/usage"
 )
 
 // GatewayHandlers 持有 handler 依赖。
@@ -30,6 +31,7 @@ type GatewayHandlers struct {
 	Store     store.Store
 	Client    llm.Client      // 用于 llm.call
 	Inventory plugin.Inventory // v4 P3: 用于 tools.list / plugins.list
+	Meter     usagemeter.Meter // v5 P5-2: 用于 usage.meter / usage.bulk
 }
 
 // RegisterAll 把全部内置 source 注册到 router。
@@ -40,6 +42,9 @@ func (h *GatewayHandlers) RegisterAll(r *Router) {
 	r.Register("tools.list", h.handleToolsList)
 	r.Register("plugins.list", h.handlePluginsList)
 	r.Register("llm.call", h.handleLLMCall)
+	// v5 P5-2: usage.* 来源
+	r.Register("usage.meter", h.handleUsageMeter)
+	r.Register("usage.bulk", h.handleUsageBulk)
 }
 
 // --- 内部 helper ---
@@ -303,5 +308,53 @@ func (h *GatewayHandlers) handleLLMCall(ctx context.Context, req GatewayRequest,
 			"completion_tokens": usage.CompletionTokens,
 			"total_tokens":      usage.TotalTokens,
 		},
+	})
+}
+
+// --- usage.meter (v5 P5-2) ---
+
+type usageMeterParams struct {
+	SID string `json:"sid"`
+}
+
+// handleUsageMeter 返回单 sid 的累计 token 指标。
+//
+// 行为：
+//   - Meter nil → 返回零值；
+//   - sid == "" → 错误；
+//   - 其他 → emit final 帧携带完整 Metrics。
+func (h *GatewayHandlers) handleUsageMeter(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
+	var p usageMeterParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return fmt.Errorf("usage.meter: invalid params: %w", err)
+		}
+	}
+	if p.SID == "" {
+		return errors.New("usage.meter: sid required")
+	}
+	mtr := h.Meter
+	if mtr == nil {
+		mtr = usagemeter.NoopMeter{}
+	}
+	m := mtr.Get(p.SID)
+	return emit(ctx, out, "usage.meter", "final", map[string]any{"metrics": m})
+}
+
+// --- usage.bulk (v5 P5-2) ---
+
+// handleUsageBulk 返回全部 sid 指标的快照。
+func (h *GatewayHandlers) handleUsageBulk(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
+	mtr := h.Meter
+	if mtr == nil {
+		mtr = usagemeter.NoopMeter{}
+	}
+	all := mtr.Snapshot()
+	if all == nil {
+		all = []usagemeter.Metrics{}
+	}
+	return emit(ctx, out, "usage.bulk", "final", map[string]any{
+		"metrics": all,
+		"count":   len(all),
 	})
 }

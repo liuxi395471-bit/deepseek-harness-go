@@ -15,6 +15,7 @@ import (
 	"deepseek-harness-go/internal/skill"
 	"deepseek-harness-go/internal/store"
 	"deepseek-harness-go/internal/tool"
+	usagemeter "deepseek-harness-go/internal/usage"
 )
 
 // RunResult 是一次 Run 调用结束时的最终状态。
@@ -102,6 +103,8 @@ type LoopRunner struct {
 	Audit audit.Logger
 	// Obs 注入可观测实现（§C）；零值 = 全 no-op。
 	Obs obs.Provider
+	// Meter 是 v5 P5-2 引入的 token 计量域；零值 = NoopMeter。
+	Meter usagemeter.Meter
 
 	// baseSystem 在 run() 启动时被快照 System.Build(Registry) 的结果，
 	// 用于每次重注入 skill 前重置 msgs[0].Content，保证 skill body
@@ -357,6 +360,16 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,
 		})
+		// v5 P5-2: 通知 Meter 累计本轮 usage。
+		if r.Meter != nil {
+			r.Meter.Account(sid, usagemeter.AccountRecord{
+				PromptTokens:     usage.PromptTokens,
+				CompletionTokens: usage.CompletionTokens,
+				TotalTokens:      usage.TotalTokens,
+				Model:            r.Model,
+				At:               time.Now(),
+			})
+		}
 		if r.Store != nil && sid != "" {
 			_ = r.Store.UpdateUsage(ctx, sid, usage)
 		}
