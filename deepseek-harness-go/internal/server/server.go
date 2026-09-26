@@ -26,9 +26,11 @@ import (
 	"sync"
 
 	"deepseek-harness-go/internal/agent"
+	"deepseek-harness-go/internal/jobs"
 	"deepseek-harness-go/internal/llm"
 	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/store"
+	"deepseek-harness-go/internal/task"
 	usagemeter "deepseek-harness-go/internal/usage"
 )
 
@@ -103,6 +105,22 @@ func (s *Server) SetInventory(inv plugin.Inventory) {
 func (s *Server) SetMeter(m usagemeter.Meter) {
 	if s.gw != nil {
 		s.gw.Meter = m
+	}
+}
+
+// SetTasksExecutor 设置用于 task.* source 的 Task 执行器（v6 P6-1）。
+// 可选；缺省时 task.* 返回 503 风格错误。
+func (s *Server) SetTasksExecutor(te task.Executor) {
+	if s.gw != nil {
+		s.gw.TasksExecutor = te
+	}
+}
+
+// SetJobsRegistry 设置用于 jobs.list source 的 Job 注册表（v6 P6-3）。
+// 可选；缺省时 jobs.list 返回 503 风格错误。
+func (s *Server) SetJobsRegistry(r *jobs.Registry) {
+	if s.gw != nil {
+		s.gw.JobsRegistry = r
 	}
 }
 

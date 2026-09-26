@@ -45,15 +45,20 @@ import (
 	"deepseek-harness-go/internal/compaction"
 	"deepseek-harness-go/internal/config"
 	"deepseek-harness-go/internal/credentials"
+	"deepseek-harness-go/internal/goal"
 	"deepseek-harness-go/internal/hook"
+	"deepseek-harness-go/internal/jobs"
 	"deepseek-harness-go/internal/obs"
 	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/runtime"
 	"deepseek-harness-go/internal/sandbox"
 	"deepseek-harness-go/internal/server"
 	"deepseek-harness-go/internal/skill"
+	"deepseek-harness-go/internal/storage"
 	"deepseek-harness-go/internal/store"
 	"deepseek-harness-go/internal/subagent"
+	"deepseek-harness-go/internal/task"
+	"deepseek-harness-go/internal/terminal"
 	"deepseek-harness-go/internal/tool"
 	"deepseek-harness-go/internal/tools"
 	"deepseek-harness-go/internal/usage"
@@ -88,7 +93,7 @@ func init() {
 
 // version 在发布时通过 -ldflags 注入。默认值让它在开发构建中
 // 一目了然。
-var version = "5.0.0"
+var version = "6.0.0"
 
 func main() {
 	flag.Parse()
@@ -158,6 +163,78 @@ func main() {
 
 	reg := tool.NewRegistry()
 	tools.MustRegisterBuiltin(reg, cfg.Agent.WorkspaceRoot)
+
+	// v6 P6-3: 注册 jobs_* 工具（共享全局 Registry holder；main 启动后
+	// 通过 SetJobsRegistry 注入）。
+	for _, t := range []tool.Tool{
+		tools.NewJobsRunTool(),
+		tools.NewJobsListTool(),
+		tools.NewJobsOutputTool(),
+		tools.NewJobsKillTool(),
+	} {
+		if err := reg.Register(t); err != nil {
+			log.Fatalf("[dsh] register jobs tool: %v", err)
+		}
+	}
+
+	// v6 P6-4: 注册 todo_* 工具。
+	for _, t := range []tool.Tool{
+		tools.NewTodoWriteTool(),
+		tools.NewTodoReadTool(),
+	} {
+		if err := reg.Register(t); err != nil {
+			log.Fatalf("[dsh] register todo tool: %v", err)
+		}
+	}
+	goalStore := goal.NewStore()
+	tools.SetGoalStore(goalStore)
+
+	// v6 P6-5: 注册 terminal_* 工具（共享全局 Registry holder）。
+	for _, t := range []tool.Tool{
+		tools.NewTerminalRunTool(),
+		tools.NewTerminalReadTool(),
+		tools.NewTerminalKillTool(),
+	} {
+		if err := reg.Register(t); err != nil {
+			log.Fatalf("[dsh] register terminal tool: %v", err)
+		}
+	}
+	termReg := terminal.NewRegistry(1000)
+	tools.SetTerminalRegistry(termReg)
+
+	// v6 P6-6: KV 工具（共享全局 storage holder）。
+	for _, t := range []tool.Tool{
+		tools.NewKVSetTool(),
+		tools.NewKVGetTool(),
+		tools.NewKVDeleteTool(),
+		tools.NewKVListTool(),
+	} {
+		if err := reg.Register(t); err != nil {
+			log.Fatalf("[dsh] register kv tool: %v", err)
+		}
+	}
+
+	// v6 P6-6: KV 存储（内存 + 文件链式）。
+	storeDir := filepath.Join(cfg.Agent.WorkspaceRoot, "storage")
+	fileStore, err := storage.NewFileStorage(storeDir)
+	if err != nil {
+		log.Fatalf("[dsh] storage: %v", err)
+	}
+	kv := storage.NewChainedStorage(storage.NewMemoryStorage(), fileStore)
+	tools.SetKV(kv)
+	log.Printf("[dsh] storage: active at %s", storeDir)
+
+	// v6 P6-3: 创建 jobs registry（在持久化模式下用 SQLite；其他用内存）。
+	var jobsReg *jobs.Registry
+	if *serveFlag || cfg.Server.Enabled {
+		path := filepath.Join(cfg.Agent.WorkspaceRoot, "jobs.db")
+		// v6 内置 MemoryStore；SQLite 留 v6.1。共享内存即可。
+		_ = path
+		jobsReg = jobs.NewRegistry(jobs.NewMemoryStore(), jobs.NewShellRunner(), 1000)
+		tools.SetJobsRegistry(jobsReg)
+		log.Printf("[dsh] jobs: registry active (in-memory, 1000-line buffer)")
+	}
+
 	toolGlobal = reg // 暴露给 loadPlugins 填充
 
 	// v3 §F：OS sandbox（默认 noop）。应用于 shell 工具的子进程。
@@ -293,7 +370,21 @@ func main() {
 			log.Printf("[dsh] warning: -serve given but cfg.server.enabled=false; forcing on")
 			cfg.Server.Enabled = true
 		}
-		runServer(rootCtx, runner, st, meter, cfg, pluginClients)
+		// v6 P6-1: 打开 Task store（与 sessions 共享工作区目录）。
+		taskStore, tClose, err := openTaskStore(rootCtx, cfg)
+		if err != nil {
+			log.Fatalf("[dsh] task store: %v", err)
+		}
+		if tClose != nil {
+			defer tClose()
+		}
+		taskExec := task.NewLoopExecutor(taskStore, runner)
+		defer func() {
+			if jobsReg != nil {
+				_ = jobsReg.Close(rootCtx)
+			}
+		}()
+		runServer(rootCtx, runner, st, meter, cfg, pluginClients, taskExec, jobsReg)
 		return
 	}
 
@@ -395,8 +486,28 @@ func openStore(ctx context.Context, cfg config.Config) (store.Store, error) {
 	return store.NewMapStore(), nil
 }
 
+// openTaskStore 在 -serve 模式下打开任务存储；非 -serve 时返回内存。
+//
+// 设计：与 sessions 共享工作区（dsh.db），但用独立 SQLite 文件
+// tasks.db；关闭函数由 main 在退出前 defer。
+func openTaskStore(ctx context.Context, cfg config.Config) (task.Store, func(), error) {
+	_ = ctx
+	if !*serveFlag && !cfg.Server.Enabled {
+		// 非服务器模式：内存存储足够；无关闭动作。
+		return task.NewMemoryStore(), nil, nil
+	}
+	path := filepath.Join(cfg.Agent.WorkspaceRoot, "tasks.db")
+	st, err := task.NewSQLiteStore(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open task sqlite %s: %w", path, err)
+	}
+	log.Printf("[dsh] task store: sqlite %s", path)
+	closeFn := func() { _ = st.Close() }
+	return st, closeFn, nil
+}
+
 // runServer 在 HTTP 监听器上阻塞，直到 ctx 被取消。
-func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, meter usage.Meter, cfg config.Config, pluginClients []*plugin.Client) {
+func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, meter usage.Meter, cfg config.Config, pluginClients []*plugin.Client, taskExec task.Executor, jobsReg *jobs.Registry) {
 	if strings.TrimSpace(cfg.Server.AuthToken) == "" {
 		log.Fatalf("[dsh] server: cfg.server.auth-token (DSH_SERVER_AUTH_TOKEN) must be set before -serve")
 	}
@@ -420,6 +531,12 @@ func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, me
 	srv.SetInventory(combined)
 	srv.SetLLMClient(runner.Client)
 	srv.SetMeter(meter)
+	if taskExec != nil {
+		srv.SetTasksExecutor(taskExec)
+	}
+	if jobsReg != nil {
+		srv.SetJobsRegistry(jobsReg)
+	}
 	runner.Meter = meter
 
 	httpServer := &http.Server{

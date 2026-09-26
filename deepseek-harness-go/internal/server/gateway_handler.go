@@ -19,9 +19,11 @@ import (
 	"fmt"
 
 	"deepseek-harness-go/internal/agent"
+	"deepseek-harness-go/internal/jobs"
 	"deepseek-harness-go/internal/llm"
 	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/store"
+	"deepseek-harness-go/internal/task"
 	usagemeter "deepseek-harness-go/internal/usage"
 )
 
@@ -29,9 +31,15 @@ import (
 type GatewayHandlers struct {
 	Runner    agent.StreamingRunner
 	Store     store.Store
-	Client    llm.Client      // 用于 llm.call
+	Client    llm.Client       // 用于 llm.call
 	Inventory plugin.Inventory // v4 P3: 用于 tools.list / plugins.list
 	Meter     usagemeter.Meter // v5 P5-2: 用于 usage.meter / usage.bulk
+	// TasksExecutor 是 v6 P6-1 引入的 Task 执行器；nil 时 task.* source
+	// 返回 503 风格的错误（与 llm.call nil 风格一致）。
+	TasksExecutor task.Executor
+	// JobsRegistry 是 v6 P6-3 引入的后端 Job 注册表；nil 时 jobs.list
+	// 返回 503 风格错误。
+	JobsRegistry *jobs.Registry
 }
 
 // RegisterAll 把全部内置 source 注册到 router。
@@ -45,6 +53,13 @@ func (h *GatewayHandlers) RegisterAll(r *Router) {
 	// v5 P5-2: usage.* 来源
 	r.Register("usage.meter", h.handleUsageMeter)
 	r.Register("usage.bulk", h.handleUsageBulk)
+	// v6 P6-1: task.* 来源
+	r.Register("task.submit", h.handleTaskSubmit)
+	r.Register("task.get", h.handleTaskGet)
+	r.Register("task.list", h.handleTaskList)
+	r.Register("task.cancel", h.handleTaskCancel)
+	// v6 P6-3: jobs.list
+	r.Register("jobs.list", h.handleJobsList)
 }
 
 // --- 内部 helper ---
@@ -356,5 +371,191 @@ func (h *GatewayHandlers) handleUsageBulk(ctx context.Context, req GatewayReques
 	return emit(ctx, out, "usage.bulk", "final", map[string]any{
 		"metrics": all,
 		"count":   len(all),
+	})
+}
+
+// --- task.submit / task.get / task.list / task.cancel (v6 P6-1) ---
+
+type taskSubmitParams struct {
+	Code       string `json:"code,omitempty"`
+	Title      string `json:"title,omitempty"`
+	Input      string `json:"input"`
+	SessionID  string `json:"session_id,omitempty"`
+	Profile    string `json:"profile,omitempty"`
+	Permission string `json:"permission,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+}
+
+// handleTaskSubmit 创建并启动一个 Task；立即返回初始状态。
+func (h *GatewayHandlers) handleTaskSubmit(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
+	if h.TasksExecutor == nil {
+		return errors.New("task.submit: executor unavailable")
+	}
+	var p taskSubmitParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return fmt.Errorf("task.submit: invalid params: %w", err)
+	}
+	if p.Input == "" {
+		return errors.New("task.submit: input required")
+	}
+	t, err := h.TasksExecutor.Submit(ctx, task.SubmitRequest{
+		Code:       p.Code,
+		Title:      p.Title,
+		Input:      p.Input,
+		SessionID:  p.SessionID,
+		Profile:    p.Profile,
+		Permission: p.Permission,
+		Owner:      p.Owner,
+	})
+	if err != nil {
+		return emit(ctx, out, "task.submit", "error", map[string]any{"err": err.Error()})
+	}
+	return emit(ctx, out, "task.submit", "final", map[string]any{"task": t})
+}
+
+type taskGetParams struct {
+	ID string `json:"id"`
+}
+
+func (h *GatewayHandlers) handleTaskGet(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
+	if h.TasksExecutor == nil {
+		return errors.New("task.get: executor unavailable")
+	}
+	var p taskGetParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return fmt.Errorf("task.get: invalid params: %w", err)
+	}
+	if p.ID == "" {
+		return errors.New("task.get: id required")
+	}
+	t, err := h.TasksExecutor.Get(ctx, p.ID)
+	if err != nil {
+		return emit(ctx, out, "task.get", "error", map[string]any{"err": err.Error()})
+	}
+	return emit(ctx, out, "task.get", "final", map[string]any{"task": t})
+}
+
+type taskListParams struct {
+	States    []string `json:"states,omitempty"`
+	Owner     string   `json:"owner,omitempty"`
+	SessionID string   `json:"session_id,omitempty"`
+	Code      string   `json:"code,omitempty"`
+	Limit     int      `json:"limit,omitempty"`
+	Offset    int      `json:"offset,omitempty"`
+}
+
+func (h *GatewayHandlers) handleTaskList(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
+	if h.TasksExecutor == nil {
+		return errors.New("task.list: executor unavailable")
+	}
+	var p taskListParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return fmt.Errorf("task.list: invalid params: %w", err)
+	}
+	filter := task.Filter{
+		Owner:     p.Owner,
+		SessionID: p.SessionID,
+		Code:      p.Code,
+		Limit:     p.Limit,
+		Offset:    p.Offset,
+	}
+	for _, s := range p.States {
+		switch s {
+		case "pending":
+			filter.States = append(filter.States, task.StatePending)
+		case "running":
+			filter.States = append(filter.States, task.StateRunning)
+		case "completed":
+			filter.States = append(filter.States, task.StateCompleted)
+		case "failed":
+			filter.States = append(filter.States, task.StateFailed)
+		case "canceled":
+			filter.States = append(filter.States, task.StateCanceled)
+		default:
+			return fmt.Errorf("task.list: unknown state %q", s)
+		}
+	}
+	list, err := h.TasksExecutor.List(ctx, filter)
+	if err != nil {
+		return emit(ctx, out, "task.list", "error", map[string]any{"err": err.Error()})
+	}
+	if list == nil {
+		list = []*task.Task{}
+	}
+	return emit(ctx, out, "task.list", "final", map[string]any{
+		"tasks": list,
+		"count": len(list),
+	})
+}
+
+func (h *GatewayHandlers) handleTaskCancel(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
+	if h.TasksExecutor == nil {
+		return errors.New("task.cancel: executor unavailable")
+	}
+	var p taskGetParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return fmt.Errorf("task.cancel: invalid params: %w", err)
+	}
+	if p.ID == "" {
+		return errors.New("task.cancel: id required")
+	}
+	if err := h.TasksExecutor.Cancel(ctx, p.ID); err != nil {
+		return emit(ctx, out, "task.cancel", "error", map[string]any{"err": err.Error()})
+	}
+	t, gerr := h.TasksExecutor.Get(ctx, p.ID)
+	if gerr != nil {
+		return emit(ctx, out, "task.cancel", "final", map[string]any{"ok": true})
+	}
+	return emit(ctx, out, "task.cancel", "final", map[string]any{"ok": true, "task": t})
+}
+
+// --- jobs.list (v6 P6-3) ---
+
+type jobsListParams struct {
+	States []string `json:"states,omitempty"`
+	Owner  string   `json:"owner,omitempty"`
+	Code   string   `json:"code,omitempty"`
+	Limit  int      `json:"limit,omitempty"`
+	Offset int      `json:"offset,omitempty"`
+}
+
+// handleJobsList 返回 jobs 列表（与 jobs_list 工具参数一致）。
+func (h *GatewayHandlers) handleJobsList(ctx context.Context, req GatewayRequest, out chan<- GatewayEvent) error {
+	if h.JobsRegistry == nil {
+		return errors.New("jobs.list: registry unavailable")
+	}
+	var p jobsListParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return fmt.Errorf("jobs.list: invalid params: %w", err)
+		}
+	}
+	f := jobs.Filter{Owner: p.Owner, Code: p.Code, Limit: p.Limit, Offset: p.Offset}
+	for _, s := range p.States {
+		switch s {
+		case "pending":
+			f.States = append(f.States, jobs.StatePending)
+		case "running":
+			f.States = append(f.States, jobs.StateRunning)
+		case "succeeded":
+			f.States = append(f.States, jobs.StateSucceeded)
+		case "failed":
+			f.States = append(f.States, jobs.StateFailed)
+		case "canceled":
+			f.States = append(f.States, jobs.StateCanceled)
+		default:
+			return fmt.Errorf("jobs.list: unknown state %q", s)
+		}
+	}
+	list, err := h.JobsRegistry.List(ctx, f)
+	if err != nil {
+		return emit(ctx, out, "jobs.list", "error", map[string]any{"err": err.Error()})
+	}
+	if list == nil {
+		list = []*jobs.Job{}
+	}
+	return emit(ctx, out, "jobs.list", "final", map[string]any{
+		"jobs":  list,
+		"count": len(list),
 	})
 }

@@ -28,8 +28,11 @@ docs/
 │   ├── test-cases.md（TC-0001~TC-0099）
 │   ├── RELEASE-v4.md
 │   └── README.md
-├── v5/                   ← v5 计划占位（待启动）
-│   └── README.md
+├── v6/                   ← v6 完整文档组（任务 + 工作流）
+│   ├── PHASE-6-PLAN.md
+│   ├── DESIGN-v6.md
+│   ├── RELEASE-v6.md（启动后创建）
+│   └── test-cases.md（TC-v6-0001~TC-v6-0015，启动后创建）
 └── common/               ← 跨版本共享文档（保留空）
 ```
 
@@ -109,8 +112,8 @@ ds-go 的**最终目标**：
 | 版本 | 主题 | 工时 | 优先级 | 状态 |
 |---|---|---|---|---|
 | v4 | 事件溯源 + Gateway SSE + 库存视图 | — | — | ✅ 完成 |
-| **v5** | 安全与可观测基线（写租约 / Token 计量 / 渠道 / 凭据 / 审批矩阵 / Hook）| 5–7d | 🔴 必经 | ☐ 待启动 |
-| **v6** | 任务系统 + 工作流（Task / Workflow / Goal / Plan / Todo / Jobs / Terminal / Storage）| 5–6d | 🟡 必经 | ☐ 待启动 |
+| **v5** | 安全与可观测基线（写租约 / Token 计量 / 渠道 / 凭据 / 审批矩阵 / Hook）| 5–7d | 🔴 必经 | ✅ 完成（tag v5.0.0） |
+| **v6** | 任务系统 + 工作流（Task / Workflow / Goal / Plan / Todo / Jobs / Terminal / Storage）| 5–6d | 🟡 必经 | ✅ 完成（tag v6.0.0） |
 | **v7** | 生态与协议互通（Node Bridge / MCP multi-transport / ACP / SDK / LSP / AgentTeam）| 6–8d | 🟢 选做 | ☐ 待启动 |
 | **v8** | Web Console + 产品化（Web UI / Desktop 选做 / Spill / Browser-Use）| 8–10d | 🟢 选做 | ☐ 待启动 |
 
@@ -223,11 +226,15 @@ internal/
 
 ### v6 — 任务系统 + 持久化工作流
 
-**状态**：☐ 待启动
+**状态**：🚧 进行中
 **主题**：把"任务执行 + 异步 + 工作流"做到可编排
 **工时**：5–6 天
 **优先级**：🟡 必经
 **依赖**：v5
+**用户决策**（2026-09-27）：
+- 范围：全部 6 子 TODO
+- Task：最小子集（SubmitTask + 状态查询；filter chain 延后 v6.1）
+- Workflow：DAG 节点 + 条件路由 + 并行分支（fan-out/join）
 
 **目标**：补齐 ds-java 的"任务 / 目标 / 计划 / 后台任务 / 终端 / 存储"6 个领域。
 
@@ -341,6 +348,6 @@ internal/
 
 ---
 
-**版本**：0-ROADMAP v0.4（2026-09-26 重写：加入 v5-v8 规划 + 最终目标）
+**版本**：0-ROADMAP v0.5（2026-09-27：v5 标完成 / v6 进入规划阶段）
 **配套文档**：每个阶段的 `vN/PHASE-N-PLAN.md`（启动时创建）；`vN/DESIGN-vN.md`（按需）
 **配套 release**：`vN/RELEASE-vN.md`（vN 完成时创建）
