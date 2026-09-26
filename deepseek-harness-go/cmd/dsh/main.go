@@ -45,6 +45,7 @@ import (
 	"deepseek-harness-go/internal/compaction"
 	"deepseek-harness-go/internal/config"
 	"deepseek-harness-go/internal/credentials"
+	"deepseek-harness-go/internal/hook"
 	"deepseek-harness-go/internal/obs"
 	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/runtime"
@@ -280,6 +281,10 @@ func main() {
 	// v5 P5-2: 进程内 token 计量域（多 session 累计 + cache/reasoning）。
 	meter := usage.NewMemoryMeter()
 	runner.Meter = meter
+
+	// v5 P5-6: 工具执行钩子（默认空 registry；外部可通过 cfg.hooks 扩展）。
+	hookReg := hook.NewRegistry()
+	runner.Hooks = hookReg
 
 	// CLI 标志优先于配置；即使 cfg server.enabled 为 false，-serve 也
 	// 隐含服务器模式（缺少认证配置时会给出警告）。

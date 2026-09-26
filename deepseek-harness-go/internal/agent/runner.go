@@ -10,6 +10,7 @@ import (
 
 	"deepseek-harness-go/internal/audit"
 	"deepseek-harness-go/internal/compaction"
+	"deepseek-harness-go/internal/hook"
 	"deepseek-harness-go/internal/llm"
 	"deepseek-harness-go/internal/obs"
 	"deepseek-harness-go/internal/skill"
@@ -105,6 +106,8 @@ type LoopRunner struct {
 	Obs obs.Provider
 	// Meter 是 v5 P5-2 引入的 token 计量域；零值 = NoopMeter。
 	Meter usagemeter.Meter
+	// Hooks 是 v5 P5-6 引入的工具执行钩子；nil = NoopRegistry。
+	Hooks *hook.Registry
 
 	// baseSystem 在 run() 启动时被快照 System.Build(Registry) 的结果，
 	// 用于每次重注入 skill 前重置 msgs[0].Content，保证 skill body
@@ -417,6 +420,23 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 				raw = json.RawMessage("{}")
 			}
 
+			// v5 P5-6: PRE_TOOL_USE 钩子。可改写 raw / 拦截（返回 err）。
+			if r.Hooks != nil {
+				preReq := &hook.PreRequest{Tool: tc.Function.Name, Args: &raw}
+				if hookErr := r.Hooks.Pre(ctx, preReq); hookErr != nil {
+					r.Obs.L().Warn(ctx, "pre_tool_use hook denied", obs.A("err", hookErr.Error()))
+					content := "[ERROR] " + hookErr.Error()
+					toolMsg := llm.Message{Role: llm.RoleTool, Content: content, ToolCallID: tc.ID}
+					msgs = append(msgs, toolMsg)
+					r.persistAppend(ctx, sid, toolMsg)
+					out <- ToolResult{
+						CallID: tc.ID, Name: tc.Function.Name,
+						Content: content, IsError: true, Took: 0,
+					}
+					continue
+				}
+			}
+
 			start := time.Now()
 			toolCtx, toolSpan := r.Obs.T().Start(ctx, "tool.execute")
 			toolSpan.SetAttr("tool.name", tc.Function.Name)
@@ -441,6 +461,14 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 				toolSpan.RecordError(errors.New(result.Content))
 			}
 			toolSpan.End()
+
+			// v5 P5-6: POST_TOOL_USE 钩子（不改 raw，只改 result）。
+			if r.Hooks != nil {
+				postReq := &hook.PostRequest{Tool: tc.Function.Name, Args: raw, Result: result}
+				_ = r.Hooks.Post(ctx, postReq)
+				result = postReq.Result
+			}
+
 			took := time.Since(start)
 
 			if result.IsError && !strings.HasPrefix(result.Content, "[ERROR] ") {
