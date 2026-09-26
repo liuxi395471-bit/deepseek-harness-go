@@ -30,6 +30,10 @@ type Config struct {
 	Audit      AuditConfig      `yaml:"audit"      json:"audit"`
 	Sandbox    SandboxConfig    `yaml:"sandbox"    json:"sandbox"`
 	Shell      ShellConfig      `yaml:"shell"      json:"shell"`
+	Channels   []ChannelConfig  `yaml:"channels"   json:"channels"` // v5 P5-3
+	Approval   ApprovalConfig   `yaml:"approval"   json:"approval"` // v5 P5-5
+	Hooks      HooksConfig      `yaml:"hooks"      json:"hooks"`    // v5 P5-6
+	Credentials CredentialsConfig `yaml:"credentials" json:"credentials"` // v5 P5-4
 }
 
 // ServerConfig 保存 HTTP 服务器设置。
@@ -98,6 +102,37 @@ type AgentConfig struct {
 	Temperature   *float64 `yaml:"temperature"    env:"DSH_AGENT_TEMPERATURE"`
 	SystemPrompt  string   `yaml:"system-prompt"  env:"DSH_AGENT_SYSTEM_PROMPT"`
 	Debug         bool     `yaml:"debug"          env:"DSH_AGENT_DEBUG"`
+	// Profile 是 v5 P5-5 引入的审批矩阵 profile 选择；空 = default。
+	Profile string `yaml:"profile" env:"DSH_AGENT_PROFILE"`
+}
+
+// ChannelConfig 是 v5 P5-3 引入的多渠道配置项（独立于顶层 llm 配置）。
+type ChannelConfig struct {
+	Code      string `yaml:"code"        env:"DSH_CHANNEL_CODE"`
+	Provider  string `yaml:"provider"    env:"DSH_CHANNEL_PROVIDER"`
+	BaseURL   string `yaml:"base-url"    env:"DSH_CHANNEL_BASE_URL"`
+	APIKey    string `yaml:"api-key"     env:"DSH_CHANNEL_API_KEY"`
+	Model     string `yaml:"model"       env:"DSH_CHANNEL_MODEL"`
+	MaxTokens int    `yaml:"max-tokens"  env:"DSH_CHANNEL_MAX_TOKENS"`
+	Timeout   string `yaml:"timeout"     env:"DSH_CHANNEL_TIMEOUT"` // duration string
+}
+
+// ApprovalConfig 是 v5 P5-5 引入的审批矩阵配置。
+type ApprovalConfig struct {
+	MatrixPath string `yaml:"matrix-path" env:"DSH_APPROVAL_MATRIX_PATH"` // 可选；空用 inline Matrix
+}
+
+// HooksConfig 是 v5 P5-6 引入的钩子配置。
+type HooksConfig struct {
+	// PreToolUse / PostToolUse 是钩子命令列表（每行一个 shell 命令）。
+	PreToolUse  []string `yaml:"pre-tool-use"  env:"DSH_HOOKS_PRE"`
+	PostToolUse []string `yaml:"post-tool-use" env:"DSH_HOOKS_POST"`
+}
+
+// CredentialsConfig 是 v5 P5-4 引入的凭据配置。
+type CredentialsConfig struct {
+	// File 是 JSON 文件路径（空 = 仅 env）。
+	File string `yaml:"file" env:"DSH_CREDENTIALS_FILE"`
 }
 
 // 当 YAML 和环境变量都未提供值时应用的默认值。

@@ -44,9 +44,9 @@ import (
 	"deepseek-harness-go/internal/audit"
 	"deepseek-harness-go/internal/compaction"
 	"deepseek-harness-go/internal/config"
-	"deepseek-harness-go/internal/llm/provider"
 	"deepseek-harness-go/internal/obs"
 	"deepseek-harness-go/internal/plugin"
+	"deepseek-harness-go/internal/runtime"
 	"deepseek-harness-go/internal/sandbox"
 	"deepseek-harness-go/internal/server"
 	"deepseek-harness-go/internal/skill"
@@ -63,6 +63,7 @@ var (
 	serveFlag  = flag.Bool("serve", false, "start HTTP+SSE server (DESIGN-v2 §A.2) instead of REPL; cfg.server.enabled must be true")
 	debug      = flag.Bool("debug", false, "print all agent events to stderr")
 	auditPath  = flag.String("audit", "", "path to audit.jsonl (DESIGN-v3 §E); overrides cfg.audit.path. Empty disables auditing.")
+	channelCode = flag.String("channel", "", "v5 P5-3: switch LLM channel by code; empty = use default (cfg.llm or first channel)")
 
 	// --plugin 可重复使用：每次出现追加一个路径。flag.StringVar 做不到
 	// 这一点，因此我们注册一个自定义函数来向 plugins 追加。
@@ -119,9 +120,27 @@ func main() {
 	}
 
 	// v3 §G：provider 路由（openai | anthropic | ollama | gemini）。
-	llmClient, err := provider.NewClient(cfg.LLM)
+	// v5 P5-3 起：先尝试用 cfg.Channels 构建多渠道注册表；为空时
+	// 退化为单渠道（cfg.LLM 注册为 "default"）。
+	channelReg, err := runtime.NewRegistry(cfg.Channels, cfg.LLM)
 	if err != nil {
-		log.Fatalf("[dsh] llm: %v", err)
+		log.Fatalf("[dsh] channel registry: %v", err)
+	}
+	if len(channelReg.Codes()) > 0 {
+		log.Printf("[dsh] channels: %v", channelReg.Codes())
+	}
+	code := *channelCode
+	if code == "" {
+		code = "default"
+	}
+	llmClient, err := channelReg.Resolve(code)
+	if err != nil {
+		log.Fatalf("[dsh] channel %q: %v", code, err)
+	}
+	if model, mErr := channelReg.ResolveModel(code); mErr == nil {
+		// 用 channel 绑定的模型名覆盖 cfg.LLM.Model；
+		// 允许 cfg.LLM.Model 与 channel 模型不同。
+		log.Printf("[dsh] channel %q → model=%s", code, model)
 	}
 
 	reg := tool.NewRegistry()
