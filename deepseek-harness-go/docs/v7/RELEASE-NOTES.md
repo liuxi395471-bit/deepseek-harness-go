@@ -4,6 +4,10 @@
 
 发布时间：2026-09-27
 
+> 🏷 Git tag: `v7.0.0`（commit `80bd7b6`）
+> 🧩 Wiring commit: `1979012`（把协议层挂到 `dsh -serve`）
+> 📦 SDK commit: 见 `sdk-go/`
+
 ---
 
 ## 🎉 新增
@@ -26,15 +30,17 @@
 - 安全：入口必须位于 installRoot 内
 - `debug_bridge/main.go` 提供手动 roundtrip 工具
 
-### P7-3 MCP 多 transport（`internal/mcp/transport.go`）
+### P7-3 MCP 多 transport（`internal/mcp/transport.go` + `internal/server/mcp_bridge.go`）
 - `HTTPTransport`：POST /mcp → JSON-RPC
 - `SSETransport`：GET /mcp/sse（推）+ POST /mcp/sse（拉）
 - `SSEServerHandler`：可挂载到 http.Server 的统一接入
+- **`server.MCPDispatcher(router)`**：把 MCP JSON-RPC 桥到 Gateway source（method 映射 slash ↔ dot）
 
 ### P7-4 ACP 服务端 🔴 P0（`internal/acp/`）
 - session/create / session/send / session/cancel / session/list / permission/decide
 - Bearer token 鉴权（从 v5 credentials 注入）
 - 1:1 映射 v6 Task 域
+- **`acp.TaskExecutorAdapter`**：把 `task.Executor` 桥到 ACP 内部 `TaskSubmitter`
 
 ### P7-6 AgentTeam / A2A（`internal/a2a/`）
 - `Registry`：capability → agents 注册表
@@ -51,11 +57,66 @@
 
 ---
 
+## 🔌 Wiring：把协议层挂到 `dsh -serve`（commit `1979012`）
+
+v7 子阶段原本只交付了"独立单元"，commit `1979012` 把它们真正串到 Gateway 上：
+
+| 路径 | 协议 | 鉴权 |
+|---|---|---|
+| `/healthz` | 健康检查 | 无 |
+| `/api/gateway/stream` | v4 Gateway SSE | Bearer |
+| `/api/agent/message` / `stream` | v4 旧端点 | Bearer |
+| `/api/sessions[/...]` | v4 旧端点 | Bearer |
+| `/acp/*` | ACP HTTP | Bearer（独立） |
+| `/mcp` (POST) / `/mcp/sse` | MCP JSON-RPC / SSE | 无 |
+
+新增关键组件：
+
+- `internal/acp/task_adapter.go` — `TaskExecutorAdapter`
+- `internal/server/mcp_bridge.go` — `MCPDispatcher` + `mcpMethodToGatewaySource`
+- `internal/server/gateway.go` — `Router.DispatchSync`
+- `internal/server/server.go` — `SetACPServer` / `SetMCPDispatcher` / `Router()`
+- `internal/server/integration_test.go` — 5 个端到端集成测试
+- `internal/server/fake_task_exec.go` — 测试替身
+
+### smoke test 实测（live `dsh -serve`）
+
+```
+$ curl -X POST http://127.0.0.1:8080/acp/session/create \
+       -H "Authorization: Bearer tok-test" \
+       -H "Content-Type: application/json" \
+       -d '{"profile":"smoke"}'
+→ 200 {"session_id":"acp-1"}
+
+$ curl -X POST http://127.0.0.1:8080/acp/session/send \
+       -H "Authorization: Bearer tok-test" -H "Content-Type: application/json" \
+       -d '{"session_id":"acp-1","content":"hello world"}'
+→ 200 {"session_id":"acp-1","task_id":"762e3720dadb18c3dc0fdc355dd150df","state":"pending"}
+
+$ curl -X POST http://127.0.0.1:8080/acp/session/list \
+       -H "Authorization: Bearer tok-test" -H "Content-Type: application/json" \
+       -d '{"session_id":"acp-1"}'
+→ 200 {"tasks":[{"id":"762e3720dadb18c3dc0fdc355dd150df","state":"pending"}]}
+
+$ curl -X POST http://127.0.0.1:8080/acp/permission/decide \
+       -H "Authorization: Bearer tok-test" -H "Content-Type: application/json" \
+       -d '{"id":"p1","approve":true}'
+→ 200 {"ok":true}
+
+$ curl -X POST http://127.0.0.1:8080/mcp \
+       -H "Content-Type: application/json" \
+       -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+→ 200 {"jsonrpc":"2.0","id":1,"result":{"plugin_count":1,"tools":[{"name":"greet",...}]}}
+```
+
+---
+
 ## ✅ 测试
 
-- 全仓 `go test -count=1 -timeout=120s ./...` 通过
-- sdk-go 模块 `go test ./...` 通过
-- 21 个 v7 测试用例覆盖（`TEST-CASES.md`）
+- 全仓 `go test -count=1 -timeout=120s ./...` 通过（41 packages）
+- sdk-go 模块 `go test ./...` 通过（3 packages）
+- 30 个 v7 测试用例覆盖（`TEST-CASES.md`）：0001 ~ 0030
+- 5 个端到端 integration 测试（Server-ACP / Server-MCP / DispatchSync）
 
 ## 🛠️ 兼容性
 
@@ -63,12 +124,14 @@
 - 仅标准库依赖
 - 与 v4 Gateway SSE 帧结构兼容
 - 与 dsh-java ACP 协议对齐
+- /acp/* 与 /mcp 是**新增**路由，不影响既有 /api/* 端点
 
 ## 🚧 已知限制
 
 - Node Bridge 真 roundtrip 测试在 Windows CI 跳过（生产路径由 debug_bridge 工具验证）
 - ACP WebSocket 事件流留待 v7.1（HTTP 控制面已可用）
 - LSP 集成未在 v7 端到端冒烟（仅 client + in-memory fake）
+- MCP HTTP 当前仅 `tools/list` / `tools/call` 桥到 Gateway source；其他 method 由 MCP 客户端自行处理（返回 -32601）
 
 ## 📦 升级
 
@@ -76,4 +139,10 @@
 git fetch --tag
 git checkout v7.0.0
 go build ./cmd/dsh
+
+# 验证 wiring（启动 dsh 后另开 terminal）
+DSH_SERVER_AUTH_TOKEN=tok ./dsh -serve &
+curl -X POST http://127.0.0.1:8080/healthz                                # {"ok":true}
+curl -X POST http://127.0.0.1:8080/mcp -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+     -H "Content-Type: application/json"
 ```

@@ -97,17 +97,17 @@ ds-go 的**最终目标**：
 | 17 | Jobs | `packages/jobs` | ❌ | v6 |
 | 18 | Terminal | `packages/terminal` | ❌ | v6 |
 | 19 | Storage KV | `packages/storage` | ❌ | v6 |
-| 20 | LSP | `packages/lsp` | ❌ | v7 |
+| 20 | LSP | `packages/lsp` | ❌ | **v7 ✅** |
 | 21 | SSH | `packages/ssh` | ❌ | v8（可选）|
 | 22 | Browser-Use | `packages/browser-use` | ❌ | v8（可选）|
 | 23 | Computer-Use | `packages/computer-use` | ❌ | v8（可选）|
 | 24 | Web-UI | `apps/web` + `apps/desktop` | ❌（CLI + API）| v8 |
-| 25 | ACP | `packages/acp` | ❌ | v7 |
-| 26 | SDK | `packages/sdk` | ⚠ 部分 | v7 |
+| 25 | ACP | `packages/acp` | ❌ | **v7 ✅** |
+| 26 | SDK | `packages/sdk` | ⚠ 部分 | **v7 ✅**（独立 Go module）|
 | 27 | Spill | `packages/spill` | ❌ | v8（可选）|
 | 28 | Feedback / Deliverables | `packages/feedback` / `deliverables` | ❌ | v8（可选）|
 | 29 | PTC-Runtime | `packages/ptc-runtime` | ❌ | v8（可选）|
-| 30 | A2A / AgentTeam | `subsystems/agent-team` | ❌ | v7 |
+| 30 | A2A / AgentTeam | `subsystems/agent-team` | ❌ | **v7 ✅** |
 
 **核心域（v5 + v6）**：1–10 + 11–14 + 17–19 = 22 项核心必须完成。
 **扩展域（v7 + v8）**：12, 15, 16, 20, 22–30 = 11 项可选扩展。
@@ -121,9 +121,8 @@ ds-go 的**最终目标**：
 | **v6** | 任务系统 + 工作流（Task / Workflow / Goal / Plan / Todo / Jobs / Terminal / Storage）| 5–6d | 🟡 必经 | ✅ 完成（tag v6.0.0） |
 | **v7** | 生态与协议互通（Node Bridge / MCP multi-transport / ACP / SDK / LSP / AgentTeam）| 6–8d | 🟢 选做 | ✅ 完成（tag v7.0.0） |
 | **v8** | Web Console + 产品化（Web UI / Desktop 选做 / Spill / Browser-Use）| 8–10d | 🟢 选做 | ☐ 待启动 |
-
-**最少还需 2 个版本**（v5 + v6）覆盖核心差距。
-**完整对齐上游 ds-ts 主体能力预计还需 3–4 个版本**（v5 + v6 + v7 + v8）。
+**v5 / v6 / v7 均已 ✅ 完成**；核心差距已全部覆盖。
+**完整对齐上游 ds-ts 主体能力预计还需 1–2 个版本**（v8 + 任意后续；剩余项均为可选）。
 
 ### §1.4 与 ds-java v0.1.7 的差距映射
 
@@ -147,7 +146,6 @@ ds-go 的**最终目标**：
 | ACP / SDK | ❌ | **v7** |
 | AgentTeam / A2A | ❌ | **v7** |
 | LSP | ❌ | **v7** |
-
 ---
 
 ## §2 当前状态（截至 v4.0.0）
@@ -262,7 +260,7 @@ internal/
 
 ### v7 — 生态与协议互通
 
-**状态**：☐ 待启动
+**状态**：✅ 完成（tag v7.0.0，wiring commit `1979012`）
 **主题**：让 ds-go 能接入 Java / Node 插件生态，对外暴露协议
 **工时**：6–8 天
 **优先级**：🟢 选做
@@ -273,18 +271,20 @@ internal/
 **子 TODO**：
 1. **P7-1 插件安装工程化** — `internal/plugin/installer.go`；扫描 `installRoot`、识别 JAR / `package.json` / `plugin.json`；持久化 `plugin_status`；状态对账。
 2. **P7-2 Node Bridge 插件** — `internal/plugin/bridge/node/`，JSON-RPC stdio；入口限 `installRoot` 内。
-3. **P7-3 MCP multi-transport** — `internal/mcp/`，增加 http / sse 两种 transport。
-4. **P7-4 ACP 服务端** — `internal/acp/`，`AcpServerService`；让外部 IDE / 编辑器接入。
+3. **P7-3 MCP multi-transport** — `internal/mcp/`，增加 http / sse 两种 transport；wiring 时把 MCP JSON-RPC 桥到 Gateway source。
+4. **P7-4 ACP 服务端** — `internal/acp/`，`AcpServerService`；让外部 IDE / 编辑器接入；wiring 时挂到 `/acp/*`。
 5. **P7-5 SDK** — `internal/sdk/`，统一 JSON-RPC / HTTP / WS 客户端；Go SDK 也可独立发布。
 6. **P7-6 AgentTeam / A2A** — `internal/a2a/`，参考 Java AgentTeam；多 agent 发现 + 协作。
 7. **P7-7 LSP 工具** — `internal/lsp/`，暴露给 Agent 的 hover / references 工具。
 8. **P7-8 意图分类** — `internal/agent/intent.go`，9 条正则（移植自 Java）。
 
 **验收**：
-- `TC-v7-0001` ~ `TC-v7-0020`（20 个新用例）通过；
-- 端到端：Node 插件接入 ds-go；ACP IDE 接入 ds-go。
+- `TC-v7-0001` ~ `TC-v7-0030`（30 个新用例）通过；
+- 端到端：Node 插件接入 ds-go；ACP IDE 接入 ds-go；
+- `dsh -serve` 暴露 `/acp/*` + `/mcp`，curl 实测返回 200；
+- `sdk-go` 模块独立 `go build ./...` 通过。
 
-**详细计划**：`v7/PHASE-7-PLAN.md`（启动时创建）。
+**详细计划**：`v7/PHASE-7-PLAN.md`（已完成）。
 
 ---
 
@@ -330,7 +330,7 @@ internal/
 |---|---|---|---|
 | R1 | v5 写租约可能影响性能 | 仅在 AppendEvent 时获取；30s TTL；提供 metric | v5 |
 | R2 | v6 工作流可能状态机爆炸 | 借鉴 Java `WorkflowService` + `WorkflowRun` | v6 |
-| R3 | v7 ACP 协议复杂度 | 优先实现最小子集（`acp/prompt` 即可）| v7 |
+| R3 | v7 ACP 协议复杂度 | ✅ 已实现最小子集（HTTP 控制面 + permission/decide）；WebSocket 留 v7.1 | v7 |
 | R4 | v8 Web Console 工作量大 | 仅做"会话 + 插件 + 模型设置"3 页；其他留 TODO | v8 |
 | R5 | SQLite 单写者限制 | 已用 WAL + busy_timeout；v5 写租约在 EventStore 层再加强 | v5 |
 | R6 | 上游 ds-ts 演进速度可能比 ds-go 快 | 每季度 diff 一次 ds-ts subsystems；评估对齐优先级 | 全周期 |
@@ -353,6 +353,6 @@ internal/
 
 ---
 
-**版本**：0-ROADMAP v0.5（2026-09-27：v5 标完成 / v6 进入规划阶段）
+**版本**：0-ROADMAP v0.6（2026-09-27：v5/v6/v7 全部标完成 ✅；v8 待启动）
 **配套文档**：每个阶段的 `vN/PHASE-N-PLAN.md`（启动时创建）；`vN/DESIGN-vN.md`（按需）
-**配套 release**：`vN/RELEASE-vN.md`（vN 完成时创建）
+**配套 release**：`vN/RELEASE-NOTES.md`（vN 完成时创建；v7 见 `v7/RELEASE-NOTES.md`）

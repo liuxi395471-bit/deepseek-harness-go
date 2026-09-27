@@ -1,9 +1,25 @@
 # DeepSeek Harness Go 版（`dsh`）
 
-参照 `deepseek-harness-java/` 的核心抽象用 Go 实现的 **ReAct agent harness**。当前对应 [PLAN.md](./docs/PLAN.md)（v2 收官）与 [PLAN-v3.md](./docs/PLAN-v3.md)（v3 实施中）。
+参照 `deepseek-harness-java/` 的核心抽象用 Go 实现的 **ReAct agent harness**。当前对应 [0-ROADMAP.md](./docs/0-ROADMAP.md)（整体路线图）+ 各 `docs/vN/PHASE-N-PLAN.md`。
 
-**当前版本**：v4.0.0（2026-09-26）—— v4 全部 TODO 完成，含统一 Gateway SSE、插件库存视图、会话事件溯源、测试用例库。
-**下一版**：v4.x —— LRU 缓存、tools.list 分页。
+**当前版本**：v7.0.0（2026-09-27）—— 生态与协议互通完成：ACP / SDK / Node Bridge / MCP multi-transport / AgentTeam / LSP / 意图分类。
+**下一版**：v8 —— Web Console + 产品化。
+
+---
+
+## v7 新增亮点
+
+- **ACP 服务端**：`/acp/session/{create,send,cancel,list}` + `/acp/permission/decide`（独立鉴权）
+- **MCP HTTP+SSE transport**：`POST /mcp`（JSON-RPC）+ `GET/POST /mcp/sse`
+- **sdk-go 独立 module**（仓库根 `sdk-go/`）：HTTP / SSE / JSON-RPC 客户端，types + examples/echo
+- **Node Bridge**：`internal/plugin/bridge/node/` 跑 Node 插件（JSON-RPC over stdio；installRoot 边界）
+- **Plugin Installer**：Scanner / StatusStore / Reconciler
+- **AgentTeam / A2A**：`internal/a2a/` 多 agent 编排
+- **LSP 工具**：`internal/lsp/` Hover / References / Definition
+- **意图分类**：`internal/agent/intent/` 9 类正则
+- **协议层 wiring**（commit `1979012`）：`dsh -serve` 自动挂 `/acp/*` + `/mcp`，curl 实测全 200
+
+详见 [`docs/v7/RELEASE-NOTES.md`](./docs/v7/RELEASE-NOTES.md)。
 
 ---
 
@@ -301,6 +317,43 @@ deepseek-harness-go/
 - **§G 多渠道**（T9/T10/T11）：Ollama + Gemini + provider 路由
 
 **v4+**：Plan mode / Persona / Schedule / Web UI / Desktop。
+**v5**：Lease / Meter / Credentials / Approval matrix / Hook ✅
+**v6**：Task / Workflow / Goal / Jobs / Terminal / Storage ✅
+**v7**：ACP / SDK / Node Bridge / MCP multi / AgentTeam / LSP / Intent ✅
+**v8（下一版）**：Web Console + 产品化
+
+---
+
+## 升级到 v7
+
+```bash
+git fetch --tag
+git checkout v7.0.0
+go build ./cmd/dsh
+
+# 验证 v7 wiring
+DSH_SERVER_AUTH_TOKEN=tok ./dsh -serve &
+
+curl http://127.0.0.1:8080/healthz
+# {"ok":true}
+
+curl -X POST http://127.0.0.1:8080/mcp \
+     -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# {"jsonrpc":"2.0","id":1,"result":{"plugin_count":1,"tools":[...]}}
+
+curl -X POST http://127.0.0.1:8080/acp/session/create \
+     -H "Authorization: Bearer tok" \
+     -H "Content-Type: application/json" \
+     -d '{"profile":"smoke"}'
+# {"session_id":"acp-1"}
+
+# SDK（独立 module）
+cd ../sdk-go
+go test ./...
+```
+
+详见 [`docs/v7/RELEASE-NOTES.md`](./docs/v7/RELEASE-NOTES.md) 与 [`docs/v7/TEST-CASES.md`](./docs/v7/TEST-CASES.md)。
 
 ---
 

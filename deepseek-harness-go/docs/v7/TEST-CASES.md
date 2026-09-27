@@ -1,5 +1,10 @@
 # v7 测试用例（TC-v7-xxxx）
 
+> **状态**：✅ 全部通过（v7.0.0 完整覆盖）
+> **总数**：30 个 v7 用例 + 38 个回归用例（v3/v4/v5/v6）
+
+## 用例
+
 | 编号 | 子阶段 | 用例 | 期望 |
 |---|---|---|---|
 | TC-v7-0001 | SDK types | Frame / ToolCall / PermissionDecision 序列化 | JSON roundtrip 一致 |
@@ -32,6 +37,21 @@
 | TC-v7-0028 | Server-MCP | POST /mcp tools/list 桥接到 Gateway | 返回 tools 数组 |
 | TC-v7-0029 | Server-MCP | unknown method | JSON-RPC -32601 |
 | TC-v7-0030 | Router | DispatchSync | 同步收集事件 |
+
+## 子阶段覆盖矩阵
+
+| 子阶段 | 用例 | 状态 |
+|---|---|---|
+| P7-5 SDK | 0001 ~ 0006 | ✅ 6/6 |
+| P7-1 Plugin installer | 0007 ~ 0009 | ✅ 3/3 |
+| P7-2 Node Bridge | 0010 ~ 0011 | ✅ 2/2（Windows 真 roundtrip skip）|
+| P7-3 MCP transport + wiring | 0012, 0013, 0028, 0029 | ✅ 4/4 |
+| P7-4 ACP server + wiring | 0014 ~ 0017, 0026, 0027 | ✅ 6/6 |
+| P7-6 A2A / AgentTeam | 0018, 0019 | ✅ 2/2 |
+| P7-7 LSP tools | 0020 ~ 0022 | ✅ 3/3 |
+| P7-8 Intent | 0023 ~ 0025 | ✅ 3/3 |
+| Router DispatchSync | 0030 | ✅ 1/1 |
+| **合计** | | **30/30** |
 
 ## 执行
 

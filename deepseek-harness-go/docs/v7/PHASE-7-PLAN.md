@@ -2,7 +2,7 @@
 
 > **对应阶段**：v7（[0-ROADMAP.md](../../0-ROADMAP.md) §3 v7）
 > **对应详细设计**：[DESIGN-v7.md](./DESIGN-v7.md)
-> **状态**：✅ 完成（tag v7.0.0，2026-09-27）
+> **状态**：✅ 完成（tag v7.0.0，2026-09-27；wiring commit `1979012`）
 > **工时**：6–8 天
 > **基线**：v6.0.0 tag
 > **主题**：让 ds-go 能接入 Java / Node 插件生态，对外暴露协议
@@ -243,3 +243,37 @@
 | SDK | ✅ Java/TS | ✅ Go |
 | 意图分类 | ✅ | ✅（9 条正则） |
 | 插件安装工程化 | ✅ | ✅ |
+
+## §9 完成对账（v7.0.0）
+
+| 编号 | 子阶段 | 实际位置 | 测试 |
+|---|---|---|---|
+| P7-5 | sdk-go | 仓库根 `sdk-go/`（独立 module） | TC-v7-0001~0006 |
+| P7-1 | Plugin installer | `internal/plugin/installer/` | TC-v7-0007~0009 |
+| P7-2 | Node Bridge | `internal/plugin/bridge/node/` | TC-v7-0010~0011（Windows 跳过真 roundtrip） |
+| P7-3 | MCP multi-transport | `internal/mcp/transport.go` + `internal/server/mcp_bridge.go` | TC-v7-0012~0013 + TC-v7-0028~0029 |
+| P7-4 | ACP server | `internal/acp/` | TC-v7-0014~0017 + TC-v7-0026~0027 |
+| P7-6 | A2A / AgentTeam | `internal/a2a/` | TC-v7-0018~0019 |
+| P7-7 | LSP tools | `internal/lsp/` | TC-v7-0020~0022 |
+| P7-8 | Intent | `internal/agent/intent/` | TC-v7-0023~0025 |
+
+### 端到端 wiring（commit `1979012`）
+
+把 v7 协议层真正串到 `dsh -serve` 上：
+
+- `internal/server/server.go` 新增 `SetACPServer` / `SetMCPDispatcher` / `Router()`
+- `internal/server/gateway.go` 新增 `DispatchSync`（一次性 JSON-RPC 调用入口）
+- `internal/acp/task_adapter.go` 把 v6 `task.Executor` 桥到 ACP
+- `cmd/dsh/main.go` 在 `runServer` 中自动挂载 `/acp/*` 与 `/mcp`
+
+### smoke test 实测通过
+
+```
+$ curl POST /acp/session/create → 200 {"session_id":"acp-1"}
+$ curl POST /acp/session/send   → 200 {"session_id":"acp-1","task_id":"762e...","state":"pending"}
+$ curl POST /acp/session/list   → 200 {"tasks":[{"id":"762e...","state":"pending"}]}
+$ curl POST /acp/permission/decide → 200 {"ok":true}
+$ curl POST /mcp {"method":"tools/list"} → 200 {"jsonrpc":"2.0","id":1,"result":{"tools":[...]}}
+```
+
+详见 [RELEASE-NOTES.md](./RELEASE-NOTES.md) §wiring。

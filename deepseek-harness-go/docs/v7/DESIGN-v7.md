@@ -86,3 +86,43 @@ deepseek-harness-go/internal/
 | 三方依赖膨胀 | 全程 stdlib，仅 sdk-go 引入 `encoding/json` 等标准库 |
 | ACP session 与 v6 Task 1:1 映射可能限制并发 | v7.1 改为 1:N（session 持有 task 列表），现阶段够用 |
 | LSP server 重启成本高 | Client 设计为单进程进程内复用；批量 hover 才值得起 |
+
+## 7. Wiring：把协议层挂到 `dsh -serve`
+
+子阶段独立单元测试都过了，但 v7.0 收尾还缺**把它们真正串到 Gateway HTTP 上**的一步。commit `1979012` 完成：
+
+```
+dsh -serve
+├─ /healthz                        无鉴权
+├─ /api/gateway/stream             v4 Gateway（Bearer 鉴权）
+├─ /api/agent/message / stream     v4 旧端点（Bearer）
+├─ /api/sessions[/...]             v4 旧端点（Bearer）
+├─ /acp/*                          acp.Server.Handler()（独立鉴权）
+│   ├─ /acp/session/create
+│   ├─ /acp/session/send
+│   ├─ /acp/session/cancel
+│   ├─ /acp/session/list
+│   └─ /acp/permission/decide
+└─ /mcp (POST) + /mcp/sse          mcp.SSEServerHandler（独立鉴权）
+                                   ↑ 由 server.MCPDispatcher(router) 提供
+                                     JSON-RPC 桥到 Gateway source
+
+adapter:
+  task.Executor ──acp.TaskExecutorAdapter──> acp.TaskSubmitter
+  Gateway source  ──server.MCPDispatcher──> JSON-RPC result/error
+```
+
+### 关键决策
+
+- **ACP / MCP 路由不挂 Bearer 鉴权**：这些协议自带鉴权语义，强行统一会让外部 IDE / MCP client 用不起来。`apiMux` 只包 Bearer 鉴权，顶层 mux 把 ACP/MCP 排前面。
+- **MCP 方法名映射**：`tools/list`（MCP 写法）↔ `tools.list`（Gateway 已注册 source）。`mcpMethodToGatewaySource` 处理 slash / dot 两种写法。
+- **同步分发**：`Router.DispatchSync` 把 channel-based source handler 同步化成 JSON-RPC 响应，避免在 HTTP 路径上引入 SSE。
+
+## 8. 后续 v7.1 候选
+
+| 方向 | 内容 |
+|---|---|
+| ACP WebSocket 推送 | 当前只有 HTTP 控制面；ACP-WS 是 v7.1 |
+| Node Bridge 真 roundtrip CI | Windows 跳过；v7.1 加 Linux runner |
+| LSP 工具注册到 Runner | 当前 LSP 仍是 client 库；v7.1 注册为 `lsp_hover` / `lsp_references` 工具 |
+| Intent → system prompt 路由 | 当前 Classify 只是返回类；v7.1 注入 LoopRunner |
