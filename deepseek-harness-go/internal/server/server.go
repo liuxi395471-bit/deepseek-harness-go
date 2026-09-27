@@ -62,6 +62,10 @@ type Server struct {
 	acpServer    *acp.Server
 	mcpDispatch  func(ctx context.Context, req []byte) ([]byte, error) // JSON-RPC dispatcher for /mcp
 
+	// v8：可注册的额外 handler 列表（按 prefix 匹配）。
+	extraMu       sync.Mutex
+	extraHandlers []extraRoute
+
 	// 每会话锁；防止对同一 id 并发调用 RunStream。
 	sessMu  sync.Mutex
 	sessRun map[string]struct{}
@@ -135,6 +139,25 @@ func (s *Server) SetACPServer(srv *acp.Server) {
 	s.acpServer = srv
 }
 
+// SetExtraHandler 注册一个额外的 http.Handler（如 v8 ConsoleServer）。
+//
+// handler 在顶层 mux 中按前缀匹配：当 request path 以 prefix 开头时
+// 路由到 handler；其它路径走原有逻辑。
+//
+// 用途：v8 console 暴露 /console/* 与 /api/v1/console/*，与本 server
+// 的 /api/* 不冲突（前缀不同）。
+func (s *Server) SetExtraHandler(prefix string, handler http.Handler) {
+	s.extraMu.Lock()
+	s.extraHandlers = append(s.extraHandlers, extraRoute{prefix: prefix, handler: handler})
+	s.extraMu.Unlock()
+}
+
+// extraRoute 是一个 prefix → handler 路由项。
+type extraRoute struct {
+	prefix  string
+	handler http.Handler
+}
+
 // SetMCPDispatcher 设置 MCP HTTP dispatcher（v7 P7-3）。
 //
 // dispatcher 接收完整 JSON-RPC 请求字节，返回 JSON-RPC 响应字节。
@@ -175,6 +198,8 @@ func (s *Server) release(id string) {
 //   - /healthz / /api/*   → 需要 Bearer（v4 Gateway 鉴权）
 //   - /acp/* /mcp*        → 自带鉴权，绕过 Bearer（让外部 IDE / MCP
 //                           client 用各自协议）
+//   - 任何 SetExtraHandler 注册的前缀（v8 /console/* / /api/v1/console/*）
+//                           → 直接路由到对应 handler（handler 内部自带鉴权）
 func (s *Server) Handler() http.Handler {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/healthz", s.handleHealth)
@@ -186,8 +211,12 @@ func (s *Server) Handler() http.Handler {
 
 	apiHandler := s.bearerAuth(apiMux)
 
-	// 顶层 mux：先尝试 ACP/MCP，否则走 apiHandler
+	// 顶层 mux：先尝试 extraHandlers / ACP / MCP，否则走 apiHandler
 	top := http.NewServeMux()
+	for _, ex := range s.extraHandlers {
+		top.Handle(ex.prefix, ex.handler)
+		top.Handle(ex.prefix+"/", ex.handler)
+	}
 	if s.acpServer != nil {
 		top.Handle("/acp/", s.acpServer.Handler())
 	}

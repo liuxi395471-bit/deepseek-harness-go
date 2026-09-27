@@ -45,12 +45,15 @@ import (
 	"deepseek-harness-go/internal/audit"
 	"deepseek-harness-go/internal/compaction"
 	"deepseek-harness-go/internal/config"
+	"deepseek-harness-go/internal/console"
 	"deepseek-harness-go/internal/credentials"
 	"deepseek-harness-go/internal/goal"
 	"deepseek-harness-go/internal/hook"
 	"deepseek-harness-go/internal/jobs"
+	"deepseek-harness-go/internal/llm"
 	"deepseek-harness-go/internal/obs"
 	"deepseek-harness-go/internal/plugin"
+	"deepseek-harness-go/internal/plugin/installer"
 	"deepseek-harness-go/internal/runtime"
 	"deepseek-harness-go/internal/sandbox"
 	"deepseek-harness-go/internal/server"
@@ -94,7 +97,7 @@ func init() {
 
 // version 在发布时通过 -ldflags 注入。默认值让它在开发构建中
 // 一目了然。
-var version = "6.0.0"
+var version = "8.0.0-dev"
 
 func main() {
 	flag.Parse()
@@ -553,6 +556,19 @@ func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, me
 	log.Printf("[dsh] serve: ACP /acp/* + MCP /mcp exposed")
 	runner.Meter = meter
 
+	// v8 P8-1: Web Console 后端（/console/* + /api/v1/console/*）。
+	// 通过 server.SetExtraHandler 注入到同一顶层 mux，复用同一
+	// listener 和 token。
+	statusStore, err := installer.NewStatusStore(filepath.Join(cfg.Agent.WorkspaceRoot, "plugin_status.json"))
+	if err != nil {
+		log.Printf("[dsh] console: plugin status store unavailable: %v (continuing without)", err)
+	}
+	consoleSrv := buildConsoleServer(cfg, runner, st, combined, taskExec, jobsReg, srv, statusStore)
+	srv.SetExtraHandler("/console/", consoleSrv.Handler())
+	srv.SetExtraHandler("/api/v1/console/", consoleSrv.Handler())
+	consoleSrv.SetVersion(version)
+	log.Printf("[dsh] serve: Web Console at http://%s/console/  (auth=Bearer)", cfg.Server.Listen)
+
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           srv.Handler(),
@@ -718,4 +734,110 @@ func resolveChannelAPIKey(ch *config.ChannelConfig) {
 	if err == nil {
 		ch.APIKey = v
 	}
+}
+
+// buildConsoleServer 装配 v8 Console 后端（cmd/dsh 内的工厂函数）。
+func buildConsoleServer(
+	cfg config.Config,
+	runner *agent.LoopRunner,
+	st store.Store,
+	inv plugin.Inventory,
+	taskExec task.Executor,
+	jobsReg *jobs.Registry,
+	srv *server.Server,
+	statusStore *installer.StatusStore,
+) *console.ConsoleServer {
+	var sessions console.SessionBackend
+	if runner != nil && st != nil {
+		sessions = &console.SessionsAdapter{Store: st, Runner: runner}
+	}
+	var plugins console.PluginBackend
+	if inv != nil {
+		rawEntries, _ := inv.List(context.Background())
+		entries := make([]console.InventoryEntry, len(rawEntries))
+		for i, e := range rawEntries {
+			tools := make([]string, len(e.Tools))
+			for j, t := range e.Tools {
+				tools[j] = t.Name
+			}
+			entries[i] = console.InventoryEntry{
+				Name:    e.Name,
+				Kind:    e.Kind,
+				Source:  e.Source,
+				Version: e.Version,
+				Healthy: e.Healthy,
+				Tools:   tools,
+			}
+		}
+		plugins = &console.PluginsAdapter{
+			Inventory: console.NewStaticPluginInventory(entries),
+			Statuses:  statusStore,
+		}
+	}
+	var models console.ModelBackend
+	if runner != nil && runner.Client != nil {
+		models = &singleChannelModelAdapter{client: runner.Client, channel: cfg.LLM.Model}
+	}
+	var tasks console.TaskBackend
+	if taskExec != nil {
+		tasks = &console.TasksAdapter{Executor: taskExec}
+	}
+	var jobsB console.JobsBackend
+	if jobsReg != nil {
+		jobsB = &console.JobsAdapter{Registry: jobsReg}
+	}
+	queue := console.NewApprovalQueue()
+	approvals := &console.ApprovalsAdapter{Queue: queue}
+	var events console.EventStream
+	if srv != nil {
+		events = &console.EventsAdapter{Router: srv.Router()}
+	}
+	statePath := filepath.Join(cfg.Agent.WorkspaceRoot, "console_state.json")
+	stateStore, err := console.NewStateStore(statePath)
+	if err != nil {
+		log.Printf("[dsh] console: state store unavailable: %v (continuing in-memory only)", err)
+		stateStore, _ = console.NewStateStore("")
+	}
+	return console.New(console.Config{AuthToken: cfg.Server.AuthToken}, console.Deps{
+		Sessions:     sessions,
+		Plugins:      plugins,
+		Models:       models,
+		Tasks:        tasks,
+		Jobs:         jobsB,
+		Approvals:    approvals,
+		Events:       events,
+		ConsoleState: stateStore,
+	})
+}
+
+// singleChannelModelAdapter 是 v8.0 单渠道 ModelBackend 适配器。
+type singleChannelModelAdapter struct {
+	client  llm.Client
+	channel string
+}
+
+func (a *singleChannelModelAdapter) List(_ context.Context) ([]console.ModelItem, error) {
+	return []console.ModelItem{
+		{Channel: a.channel, Model: a.channel, Protocol: "default", Active: true},
+	}, nil
+}
+func (a *singleChannelModelAdapter) Update(_ context.Context, _ string, _ console.ModelItem) error {
+	return nil
+}
+func (a *singleChannelModelAdapter) Ping(ctx context.Context, channel string) (console.PingResult, error) {
+	start := time.Now()
+	resp, err := a.client.Chat(ctx, llm.ChatRequest{
+		Model:    channel,
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "ping"}},
+		MaxTokens: 1,
+	})
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return console.PingResult{OK: false, LatencyMs: latency, Error: err.Error()}, nil
+	}
+	sample := ""
+	if len(resp.Choices) > 0 {
+		sample = resp.Choices[0].Message.Content
+	}
+	return console.PingResult{OK: true, LatencyMs: latency, Sample: sample}, nil
 }
