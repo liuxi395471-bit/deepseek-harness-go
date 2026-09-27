@@ -27,6 +27,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -43,6 +45,7 @@ import (
 	"deepseek-harness-go/internal/acp"
 	"deepseek-harness-go/internal/agent"
 	"deepseek-harness-go/internal/audit"
+	"deepseek-harness-go/internal/auth"
 	"deepseek-harness-go/internal/compaction"
 	"deepseek-harness-go/internal/config"
 	"deepseek-harness-go/internal/console"
@@ -56,6 +59,7 @@ import (
 	"deepseek-harness-go/internal/plugin/installer"
 	"deepseek-harness-go/internal/runtime"
 	"deepseek-harness-go/internal/sandbox"
+	"deepseek-harness-go/internal/schedule"
 	"deepseek-harness-go/internal/server"
 	"deepseek-harness-go/internal/skill"
 	"deepseek-harness-go/internal/storage"
@@ -66,6 +70,7 @@ import (
 	"deepseek-harness-go/internal/tool"
 	"deepseek-harness-go/internal/tools"
 	"deepseek-harness-go/internal/usage"
+	"deepseek-harness-go/internal/webhook"
 )
 
 var (
@@ -563,11 +568,32 @@ func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, me
 	if err != nil {
 		log.Printf("[dsh] console: plugin status store unavailable: %v (continuing without)", err)
 	}
-	consoleSrv := buildConsoleServer(cfg, runner, st, combined, taskExec, jobsReg, srv, statusStore)
+	// v8.1：本地用户 / JWT 鉴权后端。
+	authDBPath := filepath.Join(cfg.Agent.WorkspaceRoot, "users.db")
+	authStore, err := auth.NewStore(authDBPath)
+	if err != nil {
+		log.Fatalf("[dsh] auth: open %s: %v", authDBPath, err)
+	}
+	defer authStore.Close()
+	jwtSecret, err := loadOrCreateJWTSecret(cfg.Agent.WorkspaceRoot)
+	if err != nil {
+		log.Fatalf("[dsh] auth: jwt secret: %v", err)
+	}
+	bootstrapRootUser(authStore, os.Getenv("DSH_ADMIN_USER"), os.Getenv("DSH_ADMIN_PASSWORD"))
+	authBackend := console.NewAuthAdapter(authStore, []byte(jwtSecret), 24*time.Hour)
+
+	// v8.1：schedule + webhook 后端（内存存储；worker goroutine）。
+	scheduleStore := schedule.NewStore()
+	whDispatcher := webhook.NewDispatcher()
+	defer whDispatcher.Close()
+	scheduleWorker := schedule.NewWorker(scheduleStore, schedule.WebhookActionHandler(whDispatcher))
+	go scheduleWorker.Run(ctx)
+	consoleSrv := buildConsoleServer(cfg, runner, st, combined, taskExec, jobsReg, srv, statusStore, authBackend, scheduleStore, whDispatcher)
 	srv.SetExtraHandler("/console/", consoleSrv.Handler())
 	srv.SetExtraHandler("/api/v1/console/", consoleSrv.Handler())
 	consoleSrv.SetVersion(version)
-	log.Printf("[dsh] serve: Web Console at http://%s/console/  (auth=Bearer)", cfg.Server.Listen)
+	consoleSrv.Blacklist = console.NewBlacklist()
+	log.Printf("[dsh] serve: Web Console at http://%s/console/  (auth=JWT, ttl=24h, users=%s)", cfg.Server.Listen, authDBPath)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
@@ -746,6 +772,9 @@ func buildConsoleServer(
 	jobsReg *jobs.Registry,
 	srv *server.Server,
 	statusStore *installer.StatusStore,
+	authBackend console.AuthBackend,
+	scheduleStore *schedule.Store,
+	whDispatcher *webhook.Dispatcher,
 ) *console.ConsoleServer {
 	var sessions console.SessionBackend
 	if runner != nil && st != nil {
@@ -807,7 +836,71 @@ func buildConsoleServer(
 		Approvals:    approvals,
 		Events:       events,
 		ConsoleState: stateStore,
+		Auth:         authBackend,
+		Schedules:    console.NewScheduleAdapter(scheduleStore),
+		Webhooks:     console.NewWebhookAdapter(whDispatcher),
 	})
+}
+
+// loadOrCreateJWTSecret 加载或创建 JWT 签名密钥。密钥持久化在
+// <workspace>/jwt.key 文件（hex 编码 32 字节）；启动时若文件不存在
+// 则随机生成并写入。返回 hex 字符串。
+func loadOrCreateJWTSecret(workspace string) (string, error) {
+	path := filepath.Join(workspace, "jwt.key")
+	if b, err := os.ReadFile(path); err == nil {
+		s := strings.TrimSpace(string(b))
+		if len(s) >= 32 {
+			return s, nil
+		}
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	s := hex.EncodeToString(b)
+	if err := os.WriteFile(path, []byte(s), 0o600); err != nil {
+		return "", err
+	}
+	log.Printf("[dsh] auth: created new JWT signing key at %s", path)
+	return s, nil
+}
+
+// bootstrapRootUser 创建首个 root 账号（v8.1）。
+//
+// 行为：
+//   - 如果 users 表已存在 ≥1 行 → 不做任何事（用户已配置）；
+//   - 否则按环境变量创建 root 账号：
+//     * DSH_ADMIN_USER（默认 "root"）
+//     * DSH_ADMIN_PASSWORD（默认：随机生成 16 字节 hex 并打印到 stderr）
+func bootstrapRootUser(st *auth.Store, user, pass string) {
+	if user == "" {
+		user = "root"
+	}
+	n, err := st.Count()
+	if err != nil {
+		log.Printf("[dsh] auth: bootstrap: count: %v", err)
+		return
+	}
+	if n > 0 {
+		return
+	}
+	if pass == "" {
+		b := make([]byte, 12)
+		_, _ = rand.Read(b)
+		pass = hex.EncodeToString(b)
+		log.Printf("[dsh] auth: bootstrap user %q with random password: %s", user, pass)
+		log.Printf("[dsh] auth: >> save this password — set DSH_ADMIN_PASSWORD before next boot to override <<")
+	}
+	h, err := auth.HashPassword(pass)
+	if err != nil {
+		log.Printf("[dsh] auth: bootstrap: hash: %v", err)
+		return
+	}
+	if _, err := st.Create(auth.User{Username: user, PasswordHash: h, Role: "admin"}); err != nil {
+		log.Printf("[dsh] auth: bootstrap: create: %v", err)
+		return
+	}
+	log.Printf("[dsh] auth: bootstrap: created admin user %q", user)
 }
 
 // singleChannelModelAdapter 是 v8.0 单渠道 ModelBackend 适配器。

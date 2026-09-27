@@ -1,15 +1,15 @@
 <script setup lang="ts">
 // App.vue — 顶层布局
 //
-// 顶部栏 + 侧边导航 + 主内容区；token 通过右侧表单输入。
-// 当 ?from=desktop 时（启动器嵌入场景），隐藏 token 输入框（已自动注入）
-// 并在底部显示状态条（启动器版本/工作区）。
+// v8.1 起：用 JWT 登录替代 token 输入；顶栏显示用户名菜单（注销）。
+// 桌面模式（?from=desktop）下隐藏登录入口（启动器已自动注入 JWT）。
 
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useTokenStore } from '@/stores/token'
+import { useUserStore } from '@/stores/user'
 import { useUIStore } from '@/stores/ui'
-import { client } from '@/api/client'
+import { bindRouter, client } from '@/api/client'
+import { fetchMe, logout as apiLogout } from '@/api/auth'
 import { useI18n } from '@/i18n'
 import {
   MessageSquare,
@@ -17,23 +17,27 @@ import {
   Cpu,
   ListTodo,
   ShieldCheck,
+  Calendar,
+  Bell,
   LogOut,
   Monitor,
   Moon,
   Sun,
   RefreshCw,
   Languages,
+  User as UserIcon,
 } from 'lucide-vue-next'
 import ToastStack from '@/components/ToastStack.vue'
 
 const router = useRouter()
-const tokenStore = useTokenStore()
+const userStore = useUserStore()
 const uiStore = useUIStore()
 const { locale, setLocale, t } = useI18n()
 
-const tokenInput = ref(tokenStore.token)
+bindRouter(router)
+
 const healthState = ref<'unknown' | 'ok' | 'failed'>('unknown')
-const buildVersion = ref<string>('v8.0.0-dev')
+const buildVersion = ref<string>('v8.1.0-dev')
 const buildStamp = ref<string>('')
 
 // 启动器模式：通过 ?from=desktop 进入时启用
@@ -46,6 +50,8 @@ const nav = computed(() => [
   { to: '/models', label: t('nav.models'), icon: Cpu },
   { to: '/tasks', label: t('nav.tasks'), icon: ListTodo },
   { to: '/approvals', label: t('nav.approvals'), icon: ShieldCheck },
+  { to: '/schedules', label: t('nav.schedules'), icon: Calendar },
+  { to: '/webhooks', label: t('nav.webhooks'), icon: Bell },
 ])
 
 async function fetchVersion() {
@@ -59,7 +65,7 @@ async function fetchVersion() {
   }
   try {
     const r = await fetch('/api/v1/console/state?key=buildStamp', {
-      headers: tokenStore.token ? { Authorization: `Bearer ${tokenStore.token}` } : {},
+      headers: userStore.token ? { Authorization: `Bearer ${userStore.token}` } : {},
     })
     if (r.ok) {
       const j = await r.json()
@@ -76,23 +82,24 @@ onMounted(async () => {
   // 桌面模式下从 URL 读取 token（启动器生成并注入）
   const urlToken = params.get('token')
   if (urlToken) {
-    tokenStore.setToken(urlToken)
-    // 清理 URL（避免 token 留在历史里）
+    userStore.setSession(urlToken, userStore.user || { id: 0, username: 'desktop', role: 'admin', createdAt: '' }, '')
     params.delete('token')
     const qs = params.toString()
     const newUrl =
       window.location.pathname + (qs ? '?' + qs : '') + window.location.hash
     window.history.replaceState({}, '', newUrl)
   }
-  // 若启动器没注入 token，尝试读 localStorage
-  if (!tokenStore.token) {
-    const stored = localStorage.getItem('dsh.console.token')
-    if (stored) tokenStore.setToken(stored)
+  if (userStore.token) {
+    try {
+      await fetchMe()
+    } catch {
+      /* interceptor will handle 401 */
+    }
   }
-  if (tokenStore.token) await pingHealth()
   await fetchVersion()
+  await pingHealth()
   if (isDesktop.value) {
-    fetch('/api/v1/console/state?key=desktop', { headers: { Authorization: `Bearer ${tokenStore.token}` } })
+    fetch('/api/v1/console/state?key=desktop', { headers: { Authorization: `Bearer ${userStore.token}` } })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (d?.value) {
@@ -103,12 +110,6 @@ onMounted(async () => {
   }
 })
 
-async function saveToken() {
-  tokenStore.setToken(tokenInput.value.trim())
-  await pingHealth()
-  await fetchVersion()
-}
-
 async function pingHealth() {
   try {
     await client.get('/health')
@@ -118,11 +119,10 @@ async function pingHealth() {
   }
 }
 
-function logout() {
-  tokenStore.clearToken()
-  tokenInput.value = ''
+async function logout() {
+  await apiLogout()
   healthState.value = 'unknown'
-  router.push('/sessions')
+  router.push('/login')
 }
 
 function changeLocale() {
@@ -144,19 +144,14 @@ const connectionLabel = computed(() => {
         <span class="title">{{ t('app.brand') }}</span>
         <span class="version">{{ buildVersion }}<span v-if="buildStamp"> · {{ buildStamp }}</span></span>
       </div>
-      <div class="token-form">
+      <div class="right-cluster">
         <template v-if="!isDesktop">
-          <input
-            v-model="tokenInput"
-            type="text"
-            placeholder="Bearer token"
-            @keyup.enter="saveToken"
-          />
-          <button class="btn" @click="saveToken">
-            <RefreshCw :size="14" />
-            {{ t('common.connect') }}
-          </button>
-          <button v-if="tokenStore.token" class="btn" @click="logout" :title="t('common.disconnect')">
+          <span v-if="userStore.user" class="user-chip" :title="userStore.user.username">
+            <UserIcon :size="14" />
+            <span>{{ userStore.user.username }}</span>
+            <span v-if="userStore.isAdmin" class="role-tag">admin</span>
+          </span>
+          <button class="btn" @click="logout" :title="t('login.logout')" data-testid="logout">
             <LogOut :size="14" />
           </button>
         </template>
@@ -171,6 +166,9 @@ const connectionLabel = computed(() => {
         <button class="btn" @click="changeLocale" :title="t('common.language')">
           <Languages :size="14" />
           <span class="text-xs">{{ locale === 'zh-CN' ? 'EN' : '中' }}</span>
+        </button>
+        <button class="btn" @click="pingHealth" :title="t('common.refresh')">
+          <RefreshCw :size="14" />
         </button>
         <span v-if="healthState === 'ok'" class="badge badge-loaded">{{ connectionLabel }}</span>
         <span v-else-if="healthState === 'failed'" class="badge badge-failed">{{ connectionLabel }}</span>
@@ -248,26 +246,41 @@ const connectionLabel = computed(() => {
   background: rgba(255, 255, 255, 0.1);
   border-radius: 4px;
 }
-.token-form {
+.right-cluster {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.token-form input {
-  width: 240px;
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.role-tag {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-left: 2px;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
-  border-color: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
 }
-.token-form input::placeholder {
-  color: rgba(255, 255, 255, 0.5);
-}
-.token-form .btn {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.2);
-}
-.token-form .btn:hover:not(:disabled) {
+.btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.2);
 }
 

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "dsh-wails",
+  "outputfilename": "dsh-wails",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "DeepSeek Harness",
+    "email": "team@deepseek-harness.local"
+  },
+  "info": {
+    "productName": "dsh-wails",
+    "productVersion": "8.1.0",
+    "comments": "v8.1 Wails v2 native desktop shell — replaces launchers with embedded WebView2"
+  }
+}

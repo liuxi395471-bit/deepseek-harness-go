@@ -7,7 +7,8 @@
 //
 // 设计要点：
 //   - 路由：与 server.Server 同进程共存，复用其 http.Server；
-//   - 鉴权：所有 /api/v1/console/* 要求 Bearer；/healthz 类不要求；
+//   - 鉴权：v8.0 Bearer 单 token；v8.1 升级为 JWT（auth 包），保留
+//     static token fallback 兼容老客户端；
 //   - 复用：store / plugin / runtime / approval / task / jobs
 //     全部走既有接口，不修改既有 internal/* 包。
 //   - 静态资源：//go:embed all:web/dist 提供 SPA；dev tag 下可替换为
@@ -15,11 +16,11 @@
 package console
 
 import (
-	"crypto/subtle"
 	"embed"
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // FS 持有 SPA 静态资源（在 embed.go 用 //go:embed 注入）。ConsoleServer
@@ -30,7 +31,16 @@ type FS = embed.FS
 type Config struct {
 	// AuthToken 用于校验 Bearer；空时 ConsoleServer 仍可启动，但
 	// 所有 /api/v1/console/* 路径会 401。
+	//
+	// v8.1 起：作为 JWT 解析失败时的 fallback（兼容 v8.0 启动器）。
 	AuthToken string
+
+	// JWTSecret 用于签名 / 验证 JWT。空时 ConsoleServer 仍可启动，
+	// 但所有 JWT 请求会失败（仅 static token 路径可用）。
+	JWTSecret []byte
+
+	// TokenTTL 控制签发 JWT 的默认有效期；空时使用 24h。
+	TokenTTL time.Duration
 }
 
 // ConsoleServer 把 Console HTTP handler 聚合起来。Handler() 返回一个
@@ -40,6 +50,9 @@ type ConsoleServer struct {
 
 	// Deps 是各域句柄；任一字段为 nil 时对应 endpoint 返回 503。
 	Deps Deps
+
+	// Blacklist 是注销 / 撤销 token 集合（v8.1）。
+	Blacklist *Blacklist
 
 	// 嵌入的 SPA 静态资源；通过 setSPAFS 注入（embed.go）。
 	spaFS fs.FS
@@ -77,6 +90,15 @@ type Deps struct {
 
 	// Audit：审计日志查询 + 导出（v8 P0）。可选；缺省返回 503。
 	Audit AuditBackend
+
+	// Auth：v8.1 本地用户 / JWT 鉴权。可选；缺省时仅 static token 可用。
+	Auth AuthBackend
+
+	// Schedules：v8.1 调度。可选。
+	Schedules ScheduleBackend
+
+	// Webhooks：v8.1 通知。可选。
+	Webhooks WebhookBackend
 }
 
 // New 构造一个 ConsoleServer。cfg.AuthToken 必填（出于最小安全约束）。
@@ -113,6 +135,14 @@ func (s *ConsoleServer) SetVersion(v string) { s.version = v }
 func (s *ConsoleServer) Handler() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /health", s.handleHealth)
+	// v8.1 auth
+	api.HandleFunc("POST /auth/login", s.handleLogin)
+	api.HandleFunc("POST /auth/logout", s.handleLogout)
+	api.HandleFunc("GET /auth/me", s.handleMe)
+	api.HandleFunc("PUT /auth/users", s.handleCreateUser)
+	api.HandleFunc("GET /auth/users", s.handleListUsers)
+	api.HandleFunc("DELETE /auth/users", s.handleDeleteUser)
+
 	api.HandleFunc("GET /sessions", s.handleListSessions)
 	api.HandleFunc("POST /sessions", s.handleCreateSession)
 	api.HandleFunc("GET /sessions/{sid}", s.handleGetSession)
@@ -120,6 +150,8 @@ func (s *ConsoleServer) Handler() http.Handler {
 	api.HandleFunc("POST /sessions/{sid}/messages", s.handlePostMessage)
 	api.HandleFunc("PATCH /sessions/{sid}/messages/{seq}", s.handleEditMessage)
 	api.HandleFunc("DELETE /sessions/{sid}/messages/{seq}", s.handleDeleteMessage)
+	// v8.1 Spill：events 续传（since=seq 起点）
+	api.HandleFunc("GET /sessions/{sid}/events", s.handleSessionEvents)
 
 	api.HandleFunc("GET /plugins", s.handleListPlugins)
 	api.HandleFunc("POST /plugins/{name}/enable", s.handleEnablePlugin)
@@ -143,6 +175,21 @@ func (s *ConsoleServer) Handler() http.Handler {
 	api.HandleFunc("GET /approvals", s.handleListApprovals)
 	api.HandleFunc("POST /approvals/{id}/decide", s.handleDecideApproval)
 
+	// v8.1 schedules
+	api.HandleFunc("GET /schedules", s.handleListSchedules)
+	api.HandleFunc("POST /schedules", s.handleCreateSchedule)
+	api.HandleFunc("PUT /schedules/{id}", s.handleUpdateSchedule)
+	api.HandleFunc("DELETE /schedules/{id}", s.handleDeleteSchedule)
+	api.HandleFunc("POST /schedules/{id}/run", s.handleRunSchedule)
+
+	// v8.1 webhooks
+	api.HandleFunc("GET /webhooks", s.handleListWebhooks)
+	api.HandleFunc("POST /webhooks", s.handleCreateWebhook)
+	api.HandleFunc("PUT /webhooks/{id}", s.handleUpdateWebhook)
+	api.HandleFunc("DELETE /webhooks/{id}", s.handleDeleteWebhook)
+	api.HandleFunc("POST /webhooks/{id}/test", s.handleTestWebhook)
+	api.HandleFunc("GET /webhooks/{id}/deliveries", s.handleListDeliveries)
+
 	api.HandleFunc("GET /events", s.handleEvents)
 	api.HandleFunc("GET /state", s.handleGetState)
 	api.HandleFunc("PUT /state", s.handlePutState)
@@ -151,7 +198,7 @@ func (s *ConsoleServer) Handler() http.Handler {
 
 	// 内部 mux 用相对路径；外层加一层 normalize 让 path 去掉 trailing
 	// slash（与 mux 注册风格一致）。
-	authed := s.bearerAuth(api)
+	authed := s.authedHandler(api)
 	stripped := http.StripPrefix("/api/v1/console", authed)
 	top := http.NewServeMux()
 	// 把 trailing-slash 注册到 stripped 上，让 mux 把 /x/ 也路由到 /x
@@ -174,40 +221,6 @@ func (t trailingSlashStripper) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	t.next.ServeHTTP(w, r)
-}
-
-// bearerAuth 对 next 包装 Bearer 校验。/health 类不要求（StripPrefix
-// 后）；空 token 时所有 endpoint 拒绝（防止误启动无鉴权 Console）。
-func (s *ConsoleServer) bearerAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 判定 StripPrefix 后的相对路径
-		path := r.URL.Path
-		if i := strings.Index(path, "/api/v1/console"); i == 0 {
-			path = strings.TrimPrefix(path, "/api/v1/console")
-			if path == "" {
-				path = "/"
-			}
-		}
-		if strings.HasPrefix(path, "/health") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if s.cfg.AuthToken == "" {
-			writeError(w, http.StatusServiceUnavailable, "console: auth token not configured")
-			return
-		}
-		h := r.Header.Get("Authorization")
-		if !strings.HasPrefix(h, "Bearer ") {
-			writeError(w, http.StatusUnauthorized, "missing bearer token")
-			return
-		}
-		tok := strings.TrimPrefix(h, "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.AuthToken)) != 1 {
-			writeError(w, http.StatusUnauthorized, "invalid bearer token")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // spaHandler 返回 SPA 文件 handler：/console/index.html 直接返回，

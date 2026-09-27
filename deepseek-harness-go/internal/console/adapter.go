@@ -160,6 +160,46 @@ func (a *SessionsAdapter) DeleteMessage(ctx context.Context, sid string, msgSeq 
 	return nil
 }
 
+// EventsSince 实现 v8.1 Spill 断点续传：透传到 store.EventStore.ReadEvents。
+// 若 Store 未实现 EventStore 接口，返回 (nil, -1, nil) — handler 应 fall back
+// 到 SSE /events。
+func (a *SessionsAdapter) EventsSince(ctx context.Context, sid string, since int64) ([]SessionEvent, int64, error) {
+	if a.Store == nil {
+		return nil, -1, ErrSessionMissing
+	}
+	es, ok := store.AsEventStore(a.Store)
+	if !ok {
+		return nil, -1, nil // not an error — caller handles nil events
+	}
+	raws, err := es.ReadEvents(ctx, sid, since)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, -1, ErrSessionNotFound
+		}
+		return nil, -1, err
+	}
+	out := make([]SessionEvent, 0, len(raws))
+	var last int64 = since
+	for _, ev := range raws {
+		// Payload 是 JSON bytes — 解析为 map[string]any 让前端直接消费。
+		var payload map[string]any
+		if len(ev.Payload) > 0 {
+			_ = json.Unmarshal(ev.Payload, &payload)
+		}
+		out = append(out, SessionEvent{
+			Seq:     ev.Seq,
+			Type:    int(ev.Type),
+			TS:      ev.Timestamp,
+			Payload: payload,
+			Actor:   ev.Actor,
+		})
+		if ev.Seq > last {
+			last = ev.Seq
+		}
+	}
+	return out, last, nil
+}
+
 // Send 同步阻塞版本（v8 控制台默认走 SendStream；Send 留作未来用）。
 func (a *SessionsAdapter) Send(ctx context.Context, sid, content string) (SendResult, error) {
 	if a.Runner == nil {

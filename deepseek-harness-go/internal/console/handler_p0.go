@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // --- Session message edit/delete (P0) ---
@@ -334,12 +335,37 @@ func (s *ConsoleServer) handleQueryAudit(w http.ResponseWriter, r *http.Request)
 			limit = n
 		}
 	}
-	items, err := s.Deps.Audit.Query(r.Context(), limit)
+	flt := consoleAuditFilterFromQuery(r)
+	if flt.Limit == 0 {
+		flt.Limit = limit
+	}
+	items, err := s.Deps.Audit.QueryWith(r.Context(), flt)
 	if err != nil {
 		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "limit": limit})
+}
+
+// consoleAuditFilterFromQuery 把 ?since / ?event / ?sid / ?limit 解析成 AuditFilter。
+func consoleAuditFilterFromQuery(r *http.Request) AuditFilter {
+	q := r.URL.Query()
+	f := AuditFilter{}
+	if v := q.Get("since"); v != "" {
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			f.Since = t
+		} else if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.Since = t
+		}
+	}
+	f.Event = q.Get("event")
+	f.SID = q.Get("sid")
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			f.Limit = n
+		}
+	}
+	return f
 }
 
 func (s *ConsoleServer) handleExportAudit(w http.ResponseWriter, r *http.Request) {
@@ -357,11 +383,24 @@ func (s *ConsoleServer) handleExportAudit(w http.ResponseWriter, r *http.Request
 			limit = n
 		}
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="audit.jsonl"`)
-	if err := s.Deps.Audit.Export(r.Context(), w, limit); err != nil {
-		// 已经写出去一部分头部；只能忽略。
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
-		return
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "jsonl"
+	}
+	switch format {
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="audit.csv"`)
+		if err := s.Deps.Audit.ExportCSV(r.Context(), w, limit); err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			return
+		}
+	default:
+		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="audit.jsonl"`)
+		if err := s.Deps.Audit.Export(r.Context(), w, limit); err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			return
+		}
 	}
 }

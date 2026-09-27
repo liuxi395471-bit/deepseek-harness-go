@@ -1,12 +1,29 @@
 // api/sessions.ts — Sessions REST 客户端
+//
+// v8.1 起：使用 userStore 取 JWT；新增 eventsSince() 用于 Spill 断点续传。
 
 import { client } from './client'
+import { useUserStore } from '@/stores/user'
 import type { SessionDetail, SessionItem, SessionFrame } from './types'
 
 export interface ListSessionsResponse {
   items: SessionItem[]
   limit: number
   cursor: string
+}
+
+export interface SessionEvent {
+  seq: number
+  type: number
+  ts: string
+  payload?: Record<string, unknown>
+  actor?: string
+}
+
+export interface EventsSinceResponse {
+  sid: string
+  events: SessionEvent[]
+  lastSeq: number
 }
 
 export const sessionsApi = {
@@ -45,6 +62,23 @@ export const sessionsApi = {
   },
 
   /**
+   * eventsSince 返回 sid 中 seq > since 的 events（升序）；不存在时返回 null。
+   * 用于 v8.1 Spill 断点续传。
+   */
+  eventsSince: async (sid: string, since: number): Promise<EventsSinceResponse | null> => {
+    try {
+      const { data, status } = await client.get<EventsSinceResponse>(
+        `/sessions/${encodeURIComponent(sid)}/events`,
+        { params: { since }, validateStatus: () => true },
+      )
+      if (status === 503) return null // backend 不支持 Spill
+      return data
+    } catch {
+      return null
+    }
+  },
+
+  /**
    * 流式发送消息：返回 ReadableStream<SessionFrame>（前端按 SSE 解析）。
    * fetch API 直接拿到 ReadableStream，不走 axios（SSE 友好）。
    */
@@ -54,7 +88,7 @@ export const sessionsApi = {
     onFrame: (f: SessionFrame) => void,
     signal?: AbortSignal,
   ): Promise<void> => {
-    const token = localStorage.getItem('dsh.console.token') || ''
+    const token = useUserStore().token || ''
     const resp = await fetch(
       `/api/v1/console/sessions/${encodeURIComponent(sid)}/messages`,
       {

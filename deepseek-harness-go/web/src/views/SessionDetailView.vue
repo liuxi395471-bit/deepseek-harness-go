@@ -4,10 +4,11 @@
 // 单个会话详情 + 输入框 + 流式 SSE 渲染 + 消息编辑/删除 + Token 用量明细。
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
-import { computed, ref, nextTick } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Send, ArrowLeft, Wrench, Pencil, Trash2, Save, X } from 'lucide-vue-next'
-import { sessionsApi } from '@/api/sessions'
+import { Send, ArrowLeft, Wrench, Pencil, Trash2, Save, X, RotateCw } from 'lucide-vue-next'
+import { sessionsApi, type SessionEvent } from '@/api/sessions'
+import { openSSE, type SSEHandle } from '@/utils/sse'
 import { formatTime } from '@/utils/format'
 import { useUIStore } from '@/stores/ui'
 import Modal from '@/components/Modal.vue'
@@ -42,6 +43,86 @@ const draft = ref('')
 const sending = ref(false)
 const abortCtrl = ref<AbortController | null>(null)
 const scrollEl = ref<HTMLElement | null>(null)
+
+// v8.1 Spill：断点续传状态
+const lastSpillSeq = ref<number>(-1)
+const spillConnected = ref(false)
+const spillReconnects = ref(0)
+let spillHandle: SSEHandle | null = null
+
+onMounted(() => {
+  startSpillResume()
+})
+
+onUnmounted(() => {
+  spillHandle?.close()
+})
+
+async function startSpillResume() {
+  // 先拉 since=-1 一次性拿到当前 lastSeq（实际是 max(seq)）
+  const resp = await sessionsApi.eventsSince(sid.value, -1)
+  if (resp === null) {
+    // backend 不支持 Spill；保持不连接
+    return
+  }
+  lastSpillSeq.value = resp.lastSeq
+  // 启动 SSE 长连接，since=lastSeq
+  spillHandle = openSSE({
+    url: `/api/v1/console/sessions/${encodeURIComponent(sid.value)}/events`,
+    sinceSeq: resp.lastSeq,
+    onOpen: () => {
+      spillConnected.value = true
+      spillReconnects.value = 0
+    },
+    onError: () => {
+      spillConnected.value = false
+    },
+    onReconnect: (n) => {
+      spillReconnects.value = n
+      spillConnected.value = false
+    },
+    onMessage: (data) => {
+      try {
+        const ev = JSON.parse(data) as SessionEvent
+        applySpillEvent(ev)
+        lastSpillSeq.value = ev.seq
+      } catch {
+        /* ignore non-JSON */
+      }
+    },
+  })
+}
+
+// applySpillEvent 把后端 push 来的 event 转成 UI 消息（仅 assistant_delta / tool_result 可见）。
+function applySpillEvent(ev: SessionEvent) {
+  const t = ev.type
+  // 简化：只识别常见的 few types（其余忽略）。
+  const p = (ev.payload ?? {}) as Record<string, unknown>
+  if (t === 2 /* assistant_delta */) {
+    const text = String(p.text ?? '')
+    const last = live.value[live.value.length - 1]
+    if (last && last.role === 'assistant' && last.pending) {
+      last.content += text
+    } else {
+      live.value.push({
+        id: `spill-${ev.seq}`,
+        seq: ev.seq,
+        role: 'assistant',
+        content: text,
+        ts: new Date(ev.ts).getTime(),
+      })
+    }
+  } else if (t === 6 /* tool_result */) {
+    live.value.push({
+      id: `spill-tool-${ev.seq}`,
+      seq: ev.seq,
+      role: 'tool',
+      content: String(p.content ?? ''),
+      toolCallId: String(p.tool_call_id ?? ''),
+      ts: new Date(ev.ts).getTime(),
+    })
+  }
+}
 
 const editOpen = ref(false)
 const editSeq = ref<number | null>(null)
@@ -226,6 +307,14 @@ function confirmDelete(msg: UiMessage) {
           模型 {{ detail.data.value?.model || '—' }} · {{ allMessages.length }} 条消息 · {{ rounds }} 轮
         </div>
       </div>
+      <span v-if="spillConnected" class="spill-badge" :title="`Spill: 已连接 (lastSeq=${lastSpillSeq})`">
+        <RotateCw :size="12" />
+        spill
+      </span>
+      <span v-else-if="spillReconnects > 0" class="spill-badge spill-reconnecting" :title="`Spill: 重连中 (尝试 #${spillReconnects})`">
+        <RotateCw :size="12" />
+        重连 {{ spillReconnects }}
+      </span>
       <div class="usage-card">
         <div class="usage-title">Token 用量</div>
         <div class="usage-row">
@@ -338,6 +427,20 @@ function confirmDelete(msg: UiMessage) {
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 12px;
+}
+.spill-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: rgba(59, 130, 246, 0.12);
+  color: rgb(59, 130, 246);
+}
+.spill-reconnecting {
+  background: rgba(234, 179, 8, 0.12);
+  color: rgb(234, 179, 8);
 }
 .usage-card {
   display: flex;

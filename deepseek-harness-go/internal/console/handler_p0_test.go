@@ -281,9 +281,18 @@ func (m *mockAuditBackend) Query(_ context.Context, _ int) ([]AuditRecord, error
 		{Event: "llm_call", Model: "deepseek"},
 	}, nil
 }
+func (m *mockAuditBackend) QueryWith(_ context.Context, _ AuditFilter) ([]AuditRecord, error) {
+	return m.Query(context.Background(), 0)
+}
 func (m *mockAuditBackend) Export(_ context.Context, w io.Writer, _ int) error {
 	_, _ = w.Write([]byte(`{"event":"tool_call"}` + "\n"))
 	_, _ = w.Write([]byte(`{"event":"llm_call"}` + "\n"))
+	return nil
+}
+func (m *mockAuditBackend) ExportCSV(_ context.Context, w io.Writer, _ int) error {
+	_, _ = w.Write([]byte("ts,event\n"))
+	_, _ = w.Write([]byte("2024-01-01T00:00:00Z,tool_call\n"))
+	_, _ = w.Write([]byte("2024-01-01T00:00:01Z,llm_call\n"))
 	return nil
 }
 

@@ -58,6 +58,18 @@ type SessionBackend interface {
 	EditMessage(ctx context.Context, sid string, msgSeq int64, newContent string) error
 	// DeleteMessage 删除 sid 中 seq=msgSeq 的消息（保留空位）。
 	DeleteMessage(ctx context.Context, sid string, msgSeq int64) error
+	// EventsSince 返回 sid 中 seq > since 的 events（升序）；未实现时返回
+	// nil, nil（callers 应 fall back to SSE）。v8.1 Spill 续传接口。
+	EventsSince(ctx context.Context, sid string, since int64) (events []SessionEvent, lastSeq int64, err error)
+}
+
+// SessionEvent 是 EventsSince 返回的单条事件（投影自 store.Event）。
+type SessionEvent struct {
+	Seq     int64          `json:"seq"`
+	Type    int            `json:"type"`
+	TS      time.Time      `json:"ts"`
+	Payload map[string]any `json:"payload"`
+	Actor   string         `json:"actor,omitempty"`
 }
 
 // SessionFrame 是 SendStream 输出的一帧（与 server/eventToFrame 同形）。

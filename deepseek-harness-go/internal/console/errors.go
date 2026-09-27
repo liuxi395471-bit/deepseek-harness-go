@@ -69,3 +69,31 @@ func mapError(err error) (int, Code) {
 	}
 	return http.StatusInternalServerError, CodeInternal
 }
+
+// scanInt64 从 request path 中读取名为 key 的 int64 路径变量，写到 out。
+// 调用示例：_, err := scanInt64(r, "id", &id)。
+//
+// 返回值：是否命中（命中且无错 → ok=true）；命中但 err != nil 表示解析失败。
+func scanInt64(r *http.Request, key string, out *int64) (bool, error) {
+	v := r.PathValue(key)
+	if v == "" {
+		return false, nil
+	}
+	var n int64
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c < '0' || c > '9' {
+			return true, errInvalidInt(v)
+		}
+		n = n*10 + int64(c-'0')
+	}
+	*out = n
+	return true, nil
+}
+
+// errInvalidInt 是 scanInt64 的错误。
+type invalidIntErr string
+
+func (e invalidIntErr) Error() string { return "invalid integer: " + string(e) }
+func errInvalidInt(s string) error     { return invalidIntErr(s) }
+

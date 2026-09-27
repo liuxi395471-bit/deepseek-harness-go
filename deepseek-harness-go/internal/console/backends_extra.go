@@ -132,11 +132,23 @@ type JobsBackend interface {
 
 // AuditBackend 提供审计日志查询 + 导出（v8 P0）。
 //
+// AuditFilter 是 v8.1 扩展的审计查询参数（since / event / sid）。
+type AuditFilter struct {
+	Since time.Time // 仅返回 ts > Since；零值 = 不过滤
+	Event string    // event 名精确匹配；空 = 不过滤
+	SID   string    // sessionId 精确匹配；空 = 不过滤
+	Limit int       // > 0 时生效
+}
+
 // Query 返回 limit 条记录（按时间倒序；since 留 v8.1）。
+// QueryWith 应用 AuditFilter；Limit==0 时默认 200。
 // Export 写出最近的 exportLimit 条 JSONL 到 w（HTTP 由 handler 流式写出）。
+// ExportCSV 写出 CSV 表头 + 行（流式）。
 type AuditBackend interface {
 	Query(ctx context.Context, limit int) ([]AuditRecord, error)
+	QueryWith(ctx context.Context, f AuditFilter) ([]AuditRecord, error)
 	Export(ctx context.Context, w io.Writer, exportLimit int) error
+	ExportCSV(ctx context.Context, w io.Writer, exportLimit int) error
 }
 
 // ApprovalsBackend 是 v8 控制台独立维护的 pending 队列。
@@ -171,6 +183,71 @@ type EventFrame struct {
 type StateBackend interface {
 	Get(ctx context.Context, key string) (string, bool, error)
 	Set(ctx context.Context, key, value string) error
+}
+
+// ScheduleItem 是 ScheduleBackend 的单条记录（v8.1）。
+type ScheduleItem struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Cron       string    `json:"cron"`
+	Action     string    `json:"action"` // JSON: {"type":"agent_run","prompt":"..."} | {"type":"webhook","webhookId":N}
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"createdAt"`
+	LastRunAt  time.Time `json:"lastRunAt,omitempty"`
+	NextRunAt  time.Time `json:"nextRunAt,omitempty"`
+	LastStatus string    `json:"lastStatus,omitempty"` // "ok" | "failed" | ""
+	LastError  string    `json:"lastError,omitempty"`
+}
+
+// ScheduleBackend 提供 schedule CRUD + run-now + worker（v8.1）。
+//
+// 接口形态匹配 internal/schedule.Store：
+//   - 接受 individual 字段，避免 FrontEnd 直接绑死 struct tag。
+//   - 每方法额外接受 context；Run 返回 schedule item 含最新 lastRunAt/Status。
+type ScheduleBackend interface {
+	List(ctx context.Context) ([]ScheduleItem, error)
+	Create(ctx context.Context, item ScheduleItem) (ScheduleItem, error)
+	// Update 接收 patch item（id 字段可空；空字段保留原值；enabled 用 *bool）。
+	Update(ctx context.Context, id string, item ScheduleItem) (ScheduleItem, error)
+	Delete(ctx context.Context, id string) error
+	Run(ctx context.Context, id string) (ScheduleItem, error)
+}
+
+// WebhookItem 是 WebhookBackend 的单条记录（v8.1）。
+type WebhookItem struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	URL        string    `json:"url"`
+	Secret     string    `json:"secret,omitempty"` // 仅创建/更新时返回
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"createdAt"`
+	LastStatus int       `json:"lastStatus,omitempty"`
+	LastError  string    `json:"lastError,omitempty"`
+	LastDeliveredAt time.Time `json:"lastDeliveredAt,omitempty"`
+}
+
+// WebhookDelivery 是 webhook 投递历史的一行（v8.1）。
+type WebhookDelivery struct {
+	ID          string    `json:"id"`
+	WebhookID   string    `json:"webhookId"`
+	Payload     string    `json:"payload"`
+	StatusCode  int       `json:"statusCode"`
+	Attempt     int       `json:"attempt"`
+	OK          bool      `json:"ok"`
+	DeliveredAt time.Time `json:"deliveredAt"`
+	Error       string    `json:"error,omitempty"`
+}
+
+// WebhookBackend 提供 webhook CRUD + delivery + test（v8.1）。
+//
+// 接口形态匹配 internal/webhook.Dispatcher。
+type WebhookBackend interface {
+	List(ctx context.Context) ([]WebhookItem, error)
+	Create(ctx context.Context, item WebhookItem) (WebhookItem, error)
+	Update(ctx context.Context, id string, item WebhookItem) (WebhookItem, error)
+	Delete(ctx context.Context, id string) error
+	Dispatch(ctx context.Context, id, payload string) (WebhookDelivery, error)
+	ListDeliveries(ctx context.Context, webhookID string, limit int) ([]WebhookDelivery, error)
 }
 
 // --- 哨兵错误 ---

@@ -1,14 +1,19 @@
 // router — Vue Router 4 配置
 //
-// 5 页 + 1 详情（嵌套在 sessions 下）；每个页面用 <script setup>。
-// History 模式：dsh -serve 由 SPA fallback 接管 deep-link。
+// v8.1 起：除 /login 外所有路由要求登录；未登录跳 /login?redirect=。
 
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { useUserStore } from '@/stores/user'
 
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
     redirect: '/sessions',
+  },
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/LoginView.vue'),
   },
   {
     path: '/sessions',
@@ -42,6 +47,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ApprovalsView.vue'),
   },
   {
+    path: '/schedules',
+    name: 'schedules',
+    component: () => import('@/views/SchedulesView.vue'),
+  },
+  {
+    path: '/webhooks',
+    name: 'webhooks',
+    component: () => import('@/views/WebhooksView.vue'),
+  },
+  {
     path: '/:pathMatch(.*)*',
     redirect: '/sessions',
   },
@@ -50,4 +65,15 @@ const routes: RouteRecordRaw[] = [
 export const router = createRouter({
   history: createWebHistory('/console/'),
   routes,
+})
+
+router.beforeEach((to) => {
+  // /login 永远允许
+  if (to.name === 'login') return true
+  // 其他路由：要求已登录
+  const userStore = useUserStore()
+  if (!userStore.isLoggedIn) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  return true
 })

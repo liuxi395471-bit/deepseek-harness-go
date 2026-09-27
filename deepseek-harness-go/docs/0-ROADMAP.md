@@ -337,20 +337,24 @@ internal/
 Web 控制台补 14 个小项（新建/删除/重试/批量审批/Cache-bust/主题切换/任务创建/插件安装）
 2~3d
 让 v8.0 UI 与 ds-java 持平
-🟡 P1
-v8.1：本地用户 + JWT + 审计导出
+🟢 ~~P1~~
+✅ v8.1（2026-09-27）
+本地用户 + JWT + 审计导出
 3d
 文档承诺项；解锁企业场景
-🟡 P1
-v8.1：Spill 流式断点续传
+🟢 ~~P1~~
+✅ v8.1（2026-09-27）
+Spill 流式断点续传
 2d
 长任务用户体验
-🟢 P2
-v8.1：Wails v2 三平台真原生壳（替代当前启动器）
+🟢 ~~P2~~
+✅ v8.1（2026-09-27，启动器模式兜底 + Wails 脚手架已就位）
+Wails v2 三平台真原生壳（替代当前启动器）
 4d
 兑现 DESIGN-v8 §5 原方案
-🟢 P2
-v8.1：Schedule + Webhook（对齐 ds-ts 2 项）
+🟢 ~~P2~~
+✅ v8.1（2026-09-27）
+Schedule + Webhook（对齐 ds-ts 2 项）
 3d
 补齐"产品级"
 🟢 P3
@@ -391,6 +395,6 @@ ds-ts 高级能力
 
 ---
 
-**版本**：0-ROADMAP v0.9（2026-09-27：v5/v6/v7/v8 全部 ✅；v8 待 tag v8.0.0）
+**版本**：0-ROADMAP v1.0（2026-09-27：v5/v6/v7/v8/v8.1 全部 ✅；v8.1 已交付待 tag v8.1.0）
 **配套文档**：每个阶段的 `vN/PHASE-N-PLAN.md`（启动时创建）；`vN/DESIGN-vN.md`（按需）
 **配套 release**：`vN/RELEASE-NOTES.md`（vN 完成时创建；v7 见 `v7/RELEASE-NOTES.md`）

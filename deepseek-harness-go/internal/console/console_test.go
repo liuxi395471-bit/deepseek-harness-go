@@ -148,6 +148,9 @@ func (s stubSessionBackend) EditMessage(_ ctx, _ string, _ int64, _ string) erro
 func (s stubSessionBackend) DeleteMessage(_ ctx, _ string, _ int64) error {
 	return nil
 }
+func (s stubSessionBackend) EventsSince(_ ctx, _ string, since int64) ([]SessionEvent, int64, error) {
+	return nil, since, nil
+}
 
 type ctx = context.Context
 

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"deepseek-harness-go/internal/audit"
@@ -36,6 +38,18 @@ func (a *AuditAdapter) Query(_ context.Context, limit int) ([]AuditRecord, error
 	if limit <= 0 {
 		limit = 200
 	}
+	return a.queryWith(AuditFilter{Limit: limit})
+}
+
+// QueryWith 应用过滤器。
+func (a *AuditAdapter) QueryWith(_ context.Context, f AuditFilter) ([]AuditRecord, error) {
+	if a.Path == "" {
+		return nil, nil
+	}
+	return a.queryWith(f)
+}
+
+func (a *AuditAdapter) queryWith(f AuditFilter) ([]AuditRecord, error) {
 	all, err := readAllJSONL(a.Path)
 	if err != nil {
 		return nil, err
@@ -44,8 +58,25 @@ func (a *AuditAdapter) Query(_ context.Context, limit int) ([]AuditRecord, error
 	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
 		all[i], all[j] = all[j], all[i]
 	}
-	if limit > 0 && limit < len(all) {
-		all = all[:limit]
+	// 应用过滤器
+	if !f.Since.IsZero() || f.Event != "" || f.SID != "" {
+		filtered := all[:0]
+		for _, ev := range all {
+			if !f.Since.IsZero() && ev.TS.Before(f.Since) {
+				continue
+			}
+			if f.Event != "" && ev.Event != f.Event {
+				continue
+			}
+			if f.SID != "" && ev.SessionID != f.SID {
+				continue
+			}
+			filtered = append(filtered, ev)
+		}
+		all = filtered
+	}
+	if f.Limit > 0 && f.Limit < len(all) {
+		all = all[:f.Limit]
 	}
 	return auditEventsToRecords(all), nil
 }
@@ -148,3 +179,66 @@ func auditEventsToRecords(in []audit.Event) []AuditRecord {
 	}
 	return out
 }
+
+// ExportCSV 把最近 exportLimit 条以 CSV 格式流式写到 w。
+//
+// 列：ts, session_id, event, round, tool, decision, source, model,
+// method, path, status, dur_ms, args_hash, args_raw。
+// args_raw 字段含 JSON，可能有逗号 / 引号 → RFC 4180 quoting。
+func (a *AuditAdapter) ExportCSV(ctx context.Context, w io.Writer, exportLimit int) error {
+	if a.Path == "" {
+		return nil
+	}
+	if exportLimit <= 0 {
+		exportLimit = 1000
+	}
+	records, err := a.Query(ctx, exportLimit)
+	if err != nil {
+		return err
+	}
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+	// 表头
+	if _, err := bw.WriteString("ts,session_id,event,round,tool,decision,source,model,method,path,status,dur_ms,args_hash,args_raw\n"); err != nil {
+		return err
+	}
+	for _, r := range records {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		line := csvEscape(r.TS.UTC().Format(time.RFC3339Nano)) + "," +
+			csvEscape(r.SessionID) + "," +
+			csvEscape(r.Event) + "," +
+			strconvI(r.Round) + "," +
+			csvEscape(r.Tool) + "," +
+			csvEscape(r.Decision) + "," +
+			csvEscape(r.Source) + "," +
+			csvEscape(r.Model) + "," +
+			csvEscape(r.Method) + "," +
+			csvEscape(r.Path) + "," +
+			strconvI(r.Status) + "," +
+			strconvF(r.DurMS) + "," +
+			csvEscape(r.ArgsHash) + "," +
+			csvEscape(r.ArgsRaw) + "\n"
+		if _, err := bw.WriteString(line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// csvEscape 应用 RFC 4180 quoting（必要时用 " 包起来，并把内部 " 转义为 ""）。
+func csvEscape(s string) string {
+	if s == "" {
+		return ""
+	}
+	if !strings.ContainsAny(s, ",\"\n\r") {
+		return s
+	}
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+func strconvI(i int) string { return strconv.Itoa(i) }
+func strconvF(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
