@@ -23,3 +23,7 @@ Thumbs.db
 *.test
 *.out
 coverage.txt
+go_test_*.log
+
+# 第三方工具
+tools/bin /

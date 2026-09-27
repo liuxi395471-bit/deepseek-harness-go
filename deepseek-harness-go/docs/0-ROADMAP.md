@@ -31,8 +31,13 @@ docs/
 ├── v6/                   ← v6 完整文档组（任务 + 工作流）
 │   ├── PHASE-6-PLAN.md
 │   ├── DESIGN-v6.md
-│   ├── RELEASE-v6.md（启动后创建）
-│   └── test-cases.md（TC-v6-0001~TC-v6-0015，启动后创建）
+│   ├── RELEASE-NOTES.md
+│   └── TEST-CASES.md
+├── v7/                   ← v7 完整文档组（生态与协议互通）
+│   ├── PHASE-7-PLAN.md
+│   ├── DESIGN-v7.md
+│   ├── RELEASE-NOTES.md
+│   └── TEST-CASES.md
 └── common/               ← 跨版本共享文档（保留空）
 ```
 
@@ -114,7 +119,7 @@ ds-go 的**最终目标**：
 | v4 | 事件溯源 + Gateway SSE + 库存视图 | — | — | ✅ 完成 |
 | **v5** | 安全与可观测基线（写租约 / Token 计量 / 渠道 / 凭据 / 审批矩阵 / Hook）| 5–7d | 🔴 必经 | ✅ 完成（tag v5.0.0） |
 | **v6** | 任务系统 + 工作流（Task / Workflow / Goal / Plan / Todo / Jobs / Terminal / Storage）| 5–6d | 🟡 必经 | ✅ 完成（tag v6.0.0） |
-| **v7** | 生态与协议互通（Node Bridge / MCP multi-transport / ACP / SDK / LSP / AgentTeam）| 6–8d | 🟢 选做 | ☐ 待启动 |
+| **v7** | 生态与协议互通（Node Bridge / MCP multi-transport / ACP / SDK / LSP / AgentTeam）| 6–8d | 🟢 选做 | ✅ 完成（tag v7.0.0） |
 | **v8** | Web Console + 产品化（Web UI / Desktop 选做 / Spill / Browser-Use）| 8–10d | 🟢 选做 | ☐ 待启动 |
 
 **最少还需 2 个版本**（v5 + v6）覆盖核心差距。
