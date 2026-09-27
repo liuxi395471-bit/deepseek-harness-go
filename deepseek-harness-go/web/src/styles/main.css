@@ -199,3 +199,128 @@ select:focus {
   margin-bottom: 16px;
   font-size: 13px;
 }
+
+/* --- 深色主题（P0 v8.0.0）--- */
+:root[data-theme="dark"] {
+  --bg: #0f172a;
+  --bg-card: #1e293b;
+  --border: #334155;
+  --border-strong: #475569;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --accent: #60a5fa;
+  --accent-hover: #3b82f6;
+  --danger: #f87171;
+  --danger-bg: #4c1d1d;
+  --warning: #fbbf24;
+  --warning-bg: #422006;
+  --success: #4ade80;
+  --success-bg: #14532d;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* --- 全局通知 toast（P0 v8.0.0）--- */
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10000;
+  max-width: 360px;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.toast-error {
+  border-left-color: var(--danger);
+}
+.toast-success {
+  border-left-color: var(--success);
+}
+.toast-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.toast-msg {
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-word;
+}
+.toast-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 0 0 8px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* --- 模态框（P0 v8.0.0）--- */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+}
+.modal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  min-width: 380px;
+  max-width: 560px;
+  box-shadow: var(--shadow);
+}
+.modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.modal-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.modal-body input,
+.modal-body select,
+.modal-body textarea {
+  color: var(--text);
+  background: var(--bg-card);
+}
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* --- Checkbox / 多选（P0 v8.0.0）--- */
+input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}

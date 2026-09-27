@@ -11,4 +11,7 @@ export const approvalsApi = {
   decide: async (id: string, decision: Decision): Promise<void> => {
     await client.post(`/approvals/${encodeURIComponent(id)}/decide`, { decision })
   },
+  decideBatch: async (ids: string[], decision: Decision): Promise<void> => {
+    await client.post('/approvals/decide-batch', { ids, decision })
+  },
 }

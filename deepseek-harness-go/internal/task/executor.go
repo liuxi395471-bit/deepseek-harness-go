@@ -238,6 +238,47 @@ func (e *LoopExecutor) Get(ctx context.Context, taskID string) (*Task, error) {
 	return e.store.Get(ctx, taskID)
 }
 
+// Retry 重新提交一个已终止的任务；分配新 id、复用 Input/Profile 等。
+//
+// 语义：
+//   - 找不到原始 task → ErrNotFound
+//   - 原始 task 仍在 Running/Pending → ErrAlreadyRunning
+//   - 已终止 → 新建 Task（Pending）+ spawn goroutine
+//
+// 副作用：通过 Retry 链回的新 task 自身可独立 Cancel/List。
+func (e *LoopExecutor) Retry(ctx context.Context, taskID string) (*Task, error) {
+	src, err := e.store.Get(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if src.State == StatePending || src.State == StateRunning {
+		return nil, ErrAlreadyRunning
+	}
+	newID, err := newID()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	t := &Task{
+		ID:         newID,
+		Code:       src.Code,
+		Title:      src.Title,
+		Input:      src.Input,
+		SessionID:  src.SessionID,
+		State:      StatePending,
+		Profile:    src.Profile,
+		Permission: src.Permission,
+		Owner:      src.Owner,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := e.store.Insert(ctx, t); err != nil {
+		return nil, err
+	}
+	e.spawn(t)
+	return e.store.Get(ctx, newID)
+}
+
 // List 返回按 UpdatedAt 降序的 Task 列表。
 func (e *LoopExecutor) List(ctx context.Context, filter Filter) ([]*Task, error) {
 	return e.store.List(ctx, filter)

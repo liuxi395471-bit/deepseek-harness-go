@@ -31,6 +31,19 @@ export const sessionsApi = {
     await client.delete(`/sessions/${encodeURIComponent(sid)}`)
   },
 
+  editMessage: async (sid: string, seq: number, content: string): Promise<void> => {
+    await client.patch(
+      `/sessions/${encodeURIComponent(sid)}/messages/${seq}`,
+      { content },
+    )
+  },
+
+  deleteMessage: async (sid: string, seq: number): Promise<void> => {
+    await client.delete(
+      `/sessions/${encodeURIComponent(sid)}/messages/${seq}`,
+    )
+  },
+
   /**
    * 流式发送消息：返回 ReadableStream<SessionFrame>（前端按 SSE 解析）。
    * fetch API 直接拿到 ReadableStream，不走 axios（SSE 友好）。

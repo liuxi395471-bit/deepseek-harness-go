@@ -1,8 +1,8 @@
-// 工具函数
+// utils/format.ts — 通用格式化
 
-export function formatRelative(iso: string): string {
-  const t = Date.parse(iso)
-  if (isNaN(t)) return iso
+export function formatRelative(input: string | number | Date): string {
+  const t = input instanceof Date ? input.getTime() : Date.parse(String(input))
+  if (isNaN(t)) return String(input)
   const diff = (Date.now() - t) / 1000
   if (diff < 60) return '刚刚'
   if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
@@ -10,9 +10,9 @@ export function formatRelative(iso: string): string {
   return `${Math.floor(diff / 86400)} 天前`
 }
 
-export function formatTime(iso: string): string {
-  const t = Date.parse(iso)
-  if (isNaN(t)) return iso
+export function formatTime(input: string | number | Date): string {
+  const t = input instanceof Date ? input.getTime() : Date.parse(String(input))
+  if (isNaN(t)) return String(input)
   const d = new Date(t)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`

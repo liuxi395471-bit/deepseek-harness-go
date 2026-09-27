@@ -10,6 +10,7 @@ import (
 
 	"deepseek-harness-go/internal/agent"
 	"deepseek-harness-go/internal/approval"
+	"deepseek-harness-go/internal/config"
 	"deepseek-harness-go/internal/jobs"
 	"deepseek-harness-go/internal/llm"
 	"deepseek-harness-go/internal/plugin/installer"
@@ -104,11 +105,58 @@ func (a *SessionsAdapter) Create(ctx context.Context, title, model string) (Sess
 	}, nil
 }
 
-// Delete 暂以 Begin+忽略实现：v3 Store 没有 Delete；这里做 best-effort
-// （返回 nil 让 UI 看起来"成功"，但实际数据仍在）。
+// Delete 真删除会话（v8 P0 引入）：把请求转发到 store.DeleteSession。
 //
-// v8.1 会通过 store.SQLiteStore 暴露 Drop 方法后真实删除。
-func (a *SessionsAdapter) Delete(_ context.Context, _ string) error {
+// 旧实现仅为 best-effort no-op，让 UI "看起来成功"；v8 P0 起改为
+// 调用底层 Store.DeleteSession（MapStore / SQLiteStore 都已实现）。
+func (a *SessionsAdapter) Delete(ctx context.Context, sid string) error {
+	if a.Store == nil {
+		return ErrSessionMissing
+	}
+	if err := a.Store.DeleteSession(ctx, sid); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrSessionNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+// EditMessage 透传到 store.EditMessage（v8 P0）。
+func (a *SessionsAdapter) EditMessage(ctx context.Context, sid string, msgSeq int64, newContent string) error {
+	if a.Store == nil {
+		return ErrSessionMissing
+	}
+	if err := a.Store.EditMessage(ctx, sid, msgSeq, newContent); err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return ErrSessionNotFound
+		case errors.Is(err, store.ErrMessageNotFound):
+			return ErrMessageNotFound
+		case errors.Is(err, store.ErrMessageNotEditable):
+			return ErrMessageNotEditable
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteMessage 透传到 store.DeleteMessage（v8 P0）。
+func (a *SessionsAdapter) DeleteMessage(ctx context.Context, sid string, msgSeq int64) error {
+	if a.Store == nil {
+		return ErrSessionMissing
+	}
+	if err := a.Store.DeleteMessage(ctx, sid, msgSeq); err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return ErrSessionNotFound
+		case errors.Is(err, store.ErrMessageNotFound):
+			return ErrMessageNotFound
+		default:
+			return err
+		}
+	}
 	return nil
 }
 
@@ -236,8 +284,9 @@ func msgsToAny(msgs []llm.Message) []any {
 
 // PluginsAdapter 把 plugin.Inventory + installer.StatusStore 接到 PluginBackend。
 type PluginsAdapter struct {
-	Inventory pluginInventory // 抽象的 Inventory，避免 console → server import
-	Statuses  *installer.StatusStore
+	Inventory   pluginInventory // 抽象的 Inventory，避免 console → server import
+	Statuses    *installer.StatusStore
+	InstallRoot string
 	// Toggle 是启停实现；默认 stub（只改 status，不重启）。
 	Toggle func(ctx context.Context, name string, enabled bool) error
 }
@@ -350,11 +399,68 @@ func (a *PluginsAdapter) Disable(ctx context.Context, name string) error {
 	return nil
 }
 
+// Install 扫描 installRoot → 在 Inventory 里尝试加载 name → 写 status。
+//
+// 失败场景：
+//   - name 已在 Statuses 中存在且 state = loaded/disabled：返回 ErrPluginExists；
+//   - 磁盘上没找到：返回 ErrPluginNotFound；
+//   - 扫描错误（如 installRoot 不存在）：原样返回。
+func (a *PluginsAdapter) Install(ctx context.Context, name, _ string) error {
+	if a.Statuses == nil {
+		return errors.New("plugins adapter: status store nil")
+	}
+	if st, ok := a.Statuses.Get(name); ok && (st.State == installer.StateLoaded || st.State == installer.StateDisabled) {
+		return ErrPluginExists
+	}
+	if a.InstallRoot == "" {
+		return errors.New("plugins adapter: installRoot not set")
+	}
+	sc := installer.NewScanner()
+	entries, err := sc.Scan(a.InstallRoot)
+	if err != nil {
+		return fmt.Errorf("plugins adapter: scan: %w", err)
+	}
+	var found *installer.Entry
+	for _, e := range entries {
+		if e.Name == name {
+			found = e
+			break
+		}
+	}
+	if found == nil {
+		return ErrPluginNotFound
+	}
+	st := &installer.Status{
+		Name:    name,
+		State:   installer.StateDiscovered,
+		At:      time.Now().UTC().Format(time.RFC3339),
+		Message: "installed via console",
+	}
+	return a.Statuses.Set(st)
+}
+
+// Uninstall 标记 name 为 uninstalled + 从 Statuses 移除（保留磁盘源，便于恢复）。
+//
+// name 不存在返回 ErrPluginNotFound。
+func (a *PluginsAdapter) Uninstall(ctx context.Context, name string) error {
+	if a.Statuses == nil {
+		return errors.New("plugins adapter: status store nil")
+	}
+	st, ok := a.Statuses.Get(name)
+	if !ok {
+		return ErrPluginNotFound
+	}
+	st.State = installer.StateUninstalled
+	st.Message = "uninstalled via console"
+	st.At = time.Now().UTC().Format(time.RFC3339)
+	return a.Statuses.Set(st)
+}
+
 // --- Models adapter ---
 
 // ModelsAdapter 把 runtime.Registry 接到 ModelBackend。
 //
-// v8.0 写时只改内存中的 Registry；v8.1 接 YAML 持久化。
+// v8.0 写时只改内存中的 Registry；持久化由 v8.1 接 YAML 完成。
 type ModelsAdapter struct {
 	Registry *runtime.MemoryRegistry
 }
@@ -367,23 +473,75 @@ func (a *ModelsAdapter) List(_ context.Context) ([]ModelItem, error) {
 	_ = a.Registry.Codes() // 仅触达；具体细节从 entry 内部拿
 	out := []ModelItem{}
 	for _, code := range a.Registry.Codes() {
-		// runtime.MemoryRegistry 不暴露 entry；只能通过 Resolve 拿 client
-		// 再由 client 拿 model 名（不同 provider 各异）。
-		// 这里走最简策略：channel = code，model = code 末尾段。
+		// 从 entry 拿 baseUrl / apiKey / 真实 model 名（runtime 私有字段，
+		// 但 ResolveModel / Resolve 已暴露）。
+		model, _ := a.Registry.ResolveModel(code)
 		out = append(out, ModelItem{
-			Channel: code,
-			Model: code,
+			Channel:  code,
+			Model:    model,
 			Protocol: inferProtocol(code),
-			Active: true,
+			Active:   true,
 		})
 	}
 	return out, nil
 }
 
-// Update v8.0 no-op：runtime.MemoryRegistry 不允许运行时改 model。
-//
-// v8.1 接 YAML 持久化时再实现。
-func (a *ModelsAdapter) Update(_ context.Context, _ string, _ ModelItem) error {
+// Update v8.0：Upsert 到 Registry（replace=true）。
+func (a *ModelsAdapter) Update(_ context.Context, channel string, item ModelItem) error {
+	if a.Registry == nil {
+		return errors.New("models adapter: registry nil")
+	}
+	if channel == "" {
+		return ErrBackendMissing
+	}
+	cfg := config.LLMConfig{
+		Provider: item.Protocol,
+		BaseURL:  item.BaseURL,
+		Model:    item.Model,
+		MaxTokens: 8192,
+		Timeout:  120 * time.Second,
+	}
+	return a.Registry.Upsert(channel, cfg, true)
+}
+
+// Create 新增渠道；channel 已存在返回 ErrModelExists。
+func (a *ModelsAdapter) Create(_ context.Context, item ModelItem) error {
+	if a.Registry == nil {
+		return errors.New("models adapter: registry nil")
+	}
+	if item.Channel == "" {
+		return ErrBackendMissing
+	}
+	cfg := config.LLMConfig{
+		Provider: item.Protocol,
+		BaseURL:  item.BaseURL,
+		Model:    item.Model,
+		MaxTokens: 8192,
+		Timeout:  120 * time.Second,
+	}
+	if err := a.Registry.Upsert(item.Channel, cfg, false); err != nil {
+		if strings.Contains(err.Error(), "duplicate channel") {
+			return ErrModelExists
+		}
+		if strings.Contains(err.Error(), "unknown channel") {
+			return ErrModelNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+// Remove 卸载渠道。
+func (a *ModelsAdapter) Remove(_ context.Context, channel string) error {
+	if a.Registry == nil {
+		return errors.New("models adapter: registry nil")
+	}
+	if err := a.Registry.Remove(channel); err != nil {
+		if strings.Contains(err.Error(), "unknown channel") {
+			return ErrModelNotFound
+		}
+		return err
+	}
 	return nil
 }
 
@@ -492,6 +650,77 @@ func (a *TasksAdapter) Cancel(ctx context.Context, id string) error {
 		return err
 	}
 	return nil
+}
+
+// Submit 提交一个新任务（v8 P0）。
+func (a *TasksAdapter) Submit(ctx context.Context, title, input, profile string) (TaskItem, error) {
+	if a.Executor == nil {
+		return TaskItem{}, ErrBackendMissing
+	}
+	if title == "" {
+		title = input
+	}
+	if profile == "" {
+		profile = "headless"
+	}
+	out, err := a.Executor.Submit(ctx, task.SubmitRequest{
+		Title:   truncate(title, 80),
+		Input:   input,
+		Profile: profile,
+	})
+	if err != nil {
+		return TaskItem{}, err
+	}
+	if out == nil {
+		return TaskItem{}, errors.New("tasks adapter: nil submit result")
+	}
+	return taskToItem(out), nil
+}
+
+// Retry 重跑已终止任务。
+func (a *TasksAdapter) Retry(ctx context.Context, id string) (TaskItem, error) {
+	if a.Executor == nil {
+		return TaskItem{}, ErrBackendMissing
+	}
+	out, err := a.Executor.Retry(ctx, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, task.ErrNotFound):
+			return TaskItem{}, ErrTaskNotFound
+		case errors.Is(err, task.ErrAlreadyRunning):
+			return TaskItem{}, ErrTaskRunning
+		default:
+			return TaskItem{}, err
+		}
+	}
+	if out == nil {
+		return TaskItem{}, errors.New("tasks adapter: nil retry result")
+	}
+	return taskToItem(out), nil
+}
+
+// taskToItem 把 *task.Task 转成 Console TaskItem。
+func taskToItem(t *task.Task) TaskItem {
+	return TaskItem{
+		ID:         t.ID,
+		Code:       t.Code,
+		Title:      t.Title,
+		State:      t.State.String(),
+		Profile:    t.Profile,
+		Owner:      t.Owner,
+		CreatedAt:  t.CreatedAt,
+		UpdatedAt:  t.UpdatedAt,
+		StartedAt:  t.StartedAt,
+		FinishedAt: t.FinishedAt,
+		Error:      t.Error,
+	}
+}
+
+func truncate(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // --- Jobs adapter ---

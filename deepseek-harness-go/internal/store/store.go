@@ -75,9 +75,33 @@ type Store interface {
 	// ErrNotFound。
 	UpdateUsage(ctx context.Context, id string, delta llm.Usage) error
 
+	// DeleteSession 删除指定 id 的会话及其全部消息/事件。
+	// 实现必须级联删除 messages + events（SQLite 用 ON DELETE CASCADE；
+	// MapStore 显式清空切片）。
+	// 不存在返回 ErrNotFound。
+	DeleteSession(ctx context.Context, id string) error
+
+	// EditMessage 把 sid 中 seq=msgSeq 的消息内容替换为 newContent。
+	// 只允许编辑 role=user / role=system 的消息（避免破坏 assistant
+	// 工具调用链）；其他 role 返回 ErrMessageNotEditable。
+	// msgSeq 不存在返回 ErrMessageNotFound。
+	EditMessage(ctx context.Context, sid string, msgSeq int64, newContent string) error
+
+	// DeleteMessage 删除 sid 中 seq=msgSeq 的消息。
+	// 不存在返回 ErrMessageNotFound。
+	// 注意：seq 在 SQLite 中保留空位（不重排）；UI 应通过 Load 重读。
+	DeleteMessage(ctx context.Context, sid string, msgSeq int64) error
+
 	// Close 释放资源。可安全地多次调用。
 	Close() error
 }
+
+// ErrMessageNotFound 在 EditMessage/DeleteMessage 命中未知 seq 时返回。
+var ErrMessageNotFound = errors.New("store: message not found")
+
+// ErrMessageNotEditable 在 EditMessage 试图改 role=assistant/tool 的
+// 消息时返回（避免破坏工具调用链；前端应在 UI 层禁用）。
+var ErrMessageNotEditable = errors.New("store: message role not editable")
 
 // EventStore 是 v4 §A 引入的事件溯源扩展接口。实现 AppendEvent/
 // ReadEvents/GetLastSeq 三个方法，向 AppendEvent 调用方提供完整的

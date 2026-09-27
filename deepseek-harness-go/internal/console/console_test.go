@@ -142,6 +142,12 @@ func (s stubSessionBackend) Send(_ ctx, _, _ string) (SendResult, error) {
 func (s stubSessionBackend) SendStream(_ ctx, _, _ string, _ chan<- SessionFrame) error {
 	return nil
 }
+func (s stubSessionBackend) EditMessage(_ ctx, _ string, _ int64, _ string) error {
+	return nil
+}
+func (s stubSessionBackend) DeleteMessage(_ ctx, _ string, _ int64) error {
+	return nil
+}
 
 type ctx = context.Context
 
@@ -204,6 +210,8 @@ func (s stubPluginBackend) Disable(_ ctx, name string) error {
 	}
 	return nil
 }
+func (s stubPluginBackend) Install(_ ctx, _ string, _ string) error { return nil }
+func (s stubPluginBackend) Uninstall(_ ctx, _ string) error      { return nil }
 
 func TestPluginEnable(t *testing.T) {
 	cfg := Config{AuthToken: "tok"}

@@ -359,6 +359,89 @@ func (s *SQLiteStore) UpdateUsage(ctx context.Context, id string, delta llm.Usag
 	return nil
 }
 
+// DeleteSession 删除会话及全部 messages/events（依赖外键级联）。
+//
+// schema 已声明 messages / events 表对 sessions(id) 使用 ON DELETE
+// CASCADE；删除 sessions 行即触发级联清理。
+func (s *SQLiteStore) DeleteSession(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`, id)
+	if err != nil {
+		return fmt.Errorf("store: delete_session: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	s.projectCache.cache.Invalidate(id)
+	return nil
+}
+
+// EditMessage 把 sid 中 seq=msgSeq 的消息内容替换为 newContent（仅 user/system）。
+//
+// 校验 role 防止破坏 assistant 工具调用链；用 UPDATE WHERE 命中行数
+// 区分 not-found vs not-editable（先 SELECT 拿 role）。
+func (s *SQLiteStore) EditMessage(ctx context.Context, sid string, msgSeq int64, newContent string) error {
+	handle, err := s.lease.Acquire(ctx, sid, "edit-message")
+	if err != nil {
+		return err
+	}
+	defer handle.Release()
+
+	var role string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT role FROM messages WHERE session_id=? AND seq=?`, sid, msgSeq,
+	).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrMessageNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("store: edit_message lookup: %w", err)
+	}
+	if llm.Role(role) != llm.RoleUser && llm.Role(role) != llm.RoleSystem {
+		return ErrMessageNotEditable
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE messages SET content=? WHERE session_id=? AND seq=?`,
+		newContent, sid, msgSeq,
+	); err != nil {
+		return fmt.Errorf("store: edit_message update: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET updated_at=? WHERE id=?`, time.Now().UnixMilli(), sid,
+	); err != nil {
+		return fmt.Errorf("store: edit_message touch: %w", err)
+	}
+	s.projectCache.cache.Invalidate(sid)
+	return nil
+}
+
+// DeleteMessage 删除 sid 中 seq=msgSeq 的消息（seq 保留空位）。
+func (s *SQLiteStore) DeleteMessage(ctx context.Context, sid string, msgSeq int64) error {
+	handle, err := s.lease.Acquire(ctx, sid, "delete-message")
+	if err != nil {
+		return err
+	}
+	defer handle.Release()
+
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM messages WHERE session_id=? AND seq=?`, sid, msgSeq,
+	)
+	if err != nil {
+		return fmt.Errorf("store: delete_message: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrMessageNotFound
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET updated_at=? WHERE id=?`, time.Now().UnixMilli(), sid,
+	); err != nil {
+		return fmt.Errorf("store: delete_message touch: %w", err)
+	}
+	s.projectCache.cache.Invalidate(sid)
+	return nil
+}
+
 // Close 关闭底层数据库。
 func (s *SQLiteStore) Close() error {
 	if s.closed {

@@ -271,6 +271,64 @@ func (s *MapStore) UpdateUsage(ctx context.Context, id string, delta llm.Usage) 
 	return nil
 }
 
+// DeleteSession 删除指定会话及其全部消息 + 事件。
+func (s *MapStore) DeleteSession(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("store: closed")
+	}
+	if _, ok := s.sessions[id]; !ok {
+		return ErrNotFound
+	}
+	delete(s.sessions, id)
+	return nil
+}
+
+// EditMessage 替换会话中指定 seq 的消息内容（仅 user/system）。
+func (s *MapStore) EditMessage(ctx context.Context, sid string, msgSeq int64, newContent string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("store: closed")
+	}
+	sess, ok := s.sessions[sid]
+	if !ok {
+		return ErrNotFound
+	}
+	if msgSeq < 0 || int(msgSeq) >= len(sess.messages) {
+		return ErrMessageNotFound
+	}
+	m := sess.messages[msgSeq]
+	if m.Role != llm.RoleUser && m.Role != llm.RoleSystem {
+		return ErrMessageNotEditable
+	}
+	m.Content = newContent
+	sess.messages[msgSeq] = m
+	sess.updatedAt = time.Now()
+	return nil
+}
+
+// DeleteMessage 删除会话中指定 seq 的消息。
+func (s *MapStore) DeleteMessage(ctx context.Context, sid string, msgSeq int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("store: closed")
+	}
+	sess, ok := s.sessions[sid]
+	if !ok {
+		return ErrNotFound
+	}
+	if msgSeq < 0 || int(msgSeq) >= len(sess.messages) {
+		return ErrMessageNotFound
+	}
+	// 留下空位，seq 不重排（与 SQLite 行为一致）。
+	sess.messages[msgSeq] = llm.Message{Role: llm.RoleSystem, Content: ""}
+	sess.updatedAt = time.Now()
+	return nil
+}
+
 // Close 将存储标记为已关闭。后续操作返回错误。
 func (s *MapStore) Close() error {
 	s.mu.Lock()

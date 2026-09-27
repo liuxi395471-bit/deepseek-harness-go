@@ -10,7 +10,15 @@ export const tasksApi = {
     })
     return data.items ?? []
   },
+  create: async (params: { title: string; input: string; profile?: string }): Promise<TaskItem> => {
+    const { data } = await client.post<TaskItem>('/tasks', params)
+    return data
+  },
   cancel: async (id: string): Promise<void> => {
     await client.post(`/tasks/${encodeURIComponent(id)}/cancel`)
+  },
+  retry: async (id: string): Promise<TaskItem> => {
+    const { data } = await client.post<TaskItem>(`/tasks/${encodeURIComponent(id)}/retry`)
+    return data
   },
 }

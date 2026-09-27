@@ -74,6 +74,9 @@ type Deps struct {
 
 	// ConsoleState：UI 偏好的 KV 持久化。
 	ConsoleState StateBackend // 可选
+
+	// Audit：审计日志查询 + 导出（v8 P0）。可选；缺省返回 503。
+	Audit AuditBackend
 }
 
 // New 构造一个 ConsoleServer。cfg.AuthToken 必填（出于最小安全约束）。
@@ -115,17 +118,27 @@ func (s *ConsoleServer) Handler() http.Handler {
 	api.HandleFunc("GET /sessions/{sid}", s.handleGetSession)
 	api.HandleFunc("DELETE /sessions/{sid}", s.handleDeleteSession)
 	api.HandleFunc("POST /sessions/{sid}/messages", s.handlePostMessage)
+	api.HandleFunc("PATCH /sessions/{sid}/messages/{seq}", s.handleEditMessage)
+	api.HandleFunc("DELETE /sessions/{sid}/messages/{seq}", s.handleDeleteMessage)
 
 	api.HandleFunc("GET /plugins", s.handleListPlugins)
 	api.HandleFunc("POST /plugins/{name}/enable", s.handleEnablePlugin)
 	api.HandleFunc("POST /plugins/{name}/disable", s.handleDisablePlugin)
+	api.HandleFunc("POST /plugins/{name}/install", s.handleInstallPlugin)
+	api.HandleFunc("POST /plugins/{name}/uninstall", s.handleUninstallPlugin)
 
 	api.HandleFunc("GET /models", s.handleListModels)
+	api.HandleFunc("POST /models", s.handleCreateModel)
 	api.HandleFunc("PUT /models/{channel}", s.handleUpdateModel)
+	api.HandleFunc("DELETE /models/{channel}", s.handleRemoveModel)
 	api.HandleFunc("POST /models/{channel}/ping", s.handlePingModel)
 
 	api.HandleFunc("GET /tasks", s.handleListTasks)
+	api.HandleFunc("POST /tasks", s.handleSubmitTask)
 	api.HandleFunc("POST /tasks/{id}/cancel", s.handleCancelTask)
+	api.HandleFunc("POST /tasks/{id}/retry", s.handleRetryTask)
+
+	api.HandleFunc("POST /approvals/decide-batch", s.handleDecideApprovalsBatch)
 
 	api.HandleFunc("GET /approvals", s.handleListApprovals)
 	api.HandleFunc("POST /approvals/{id}/decide", s.handleDecideApproval)
@@ -133,6 +146,8 @@ func (s *ConsoleServer) Handler() http.Handler {
 	api.HandleFunc("GET /events", s.handleEvents)
 	api.HandleFunc("GET /state", s.handleGetState)
 	api.HandleFunc("PUT /state", s.handlePutState)
+	api.HandleFunc("GET /audit", s.handleQueryAudit)
+	api.HandleFunc("GET /audit/export", s.handleExportAudit)
 
 	// 内部 mux 用相对路径；外层加一层 normalize 让 path 去掉 trailing
 	// slash（与 mux 注册风格一致）。

@@ -14,4 +14,10 @@ export const pluginsApi = {
   disable: async (name: string): Promise<void> => {
     await client.post(`/plugins/${encodeURIComponent(name)}/disable`)
   },
+  install: async (name: string, source = ''): Promise<void> => {
+    await client.post(`/plugins/${encodeURIComponent(name)}/install`, { source })
+  },
+  uninstall: async (name: string): Promise<void> => {
+    await client.post(`/plugins/${encodeURIComponent(name)}/uninstall`)
+  },
 }

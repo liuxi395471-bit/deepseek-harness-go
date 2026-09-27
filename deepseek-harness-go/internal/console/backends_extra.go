@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -70,31 +71,72 @@ type ApprovalItem struct {
 	CreatedAt  time.Time      `json:"createdAt"`
 }
 
+// AuditRecord 是审计导出的一行（与 audit.Event 字段对齐）。
+//
+// 字段集与 audit.Event 完全相同（避免 console 反向依赖 audit 包）。
+type AuditRecord struct {
+	TS        time.Time `json:"ts"`
+	SessionID string    `json:"sessionId,omitempty"`
+	Event     string    `json:"event"`
+	Round     int       `json:"round,omitempty"`
+	Tool      string    `json:"tool,omitempty"`
+	ArgsHash  string    `json:"argsHash,omitempty"`
+	ArgsRaw   string    `json:"argsRaw,omitempty"`
+	Decision  string    `json:"decision,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	Model     string    `json:"model,omitempty"`
+	Method    string    `json:"method,omitempty"`
+	Path      string    `json:"path,omitempty"`
+	Status    int       `json:"status,omitempty"`
+	DurMS     float64   `json:"durMs,omitempty"`
+}
+
 // --- 后端接口 ---
 
-// PluginBackend 是 plugin 列表 + 启停抽象。
+// PluginBackend 是 plugin 列表 + 启停 + 安装/卸载抽象。
 type PluginBackend interface {
 	List(ctx context.Context) ([]PluginItem, error)
 	Enable(ctx context.Context, name string) error
 	Disable(ctx context.Context, name string) error
+	// Install 安装 installRoot 下的插件（installer.Scan 一遍）；name 必填。
+	// 已存在同 name 返回 ErrPluginExists。
+	Install(ctx context.Context, name, source string) error
+	// Uninstall 卸载 name（删除 status + 文件）；不存在返回 ErrPluginNotFound。
+	Uninstall(ctx context.Context, name string) error
 }
 
-// ModelBackend 是多渠道模型配置 + 连通性测试抽象。
+// ModelBackend 是多渠道模型配置 + 连通性测试 + 新增/卸载抽象。
 type ModelBackend interface {
 	List(ctx context.Context) ([]ModelItem, error)
 	Update(ctx context.Context, channel string, item ModelItem) error
+	// Create 新增渠道；channel 已存在返回 ErrModelExists。
+	Create(ctx context.Context, item ModelItem) error
+	// Remove 卸载渠道；不存在返回 ErrModelNotFound。
+	Remove(ctx context.Context, channel string) error
 	Ping(ctx context.Context, channel string) (PingResult, error)
 }
 
-// TaskBackend 是 task 列表 + 取消抽象。
+// TaskBackend 是 task 列表 / 取消 / 提交 / 重试抽象。
 type TaskBackend interface {
 	List(ctx context.Context, state string) ([]TaskItem, error)
 	Cancel(ctx context.Context, id string) error
+	Submit(ctx context.Context, title, input, profile string) (TaskItem, error)
+	// Retry 重跑已终止任务。Running/Pending 返回 ErrTaskRunning。
+	Retry(ctx context.Context, id string) (TaskItem, error)
 }
 
 // JobsBackend 是 v6 jobs 进度补充。
 type JobsBackend interface {
 	Get(ctx context.Context, jobID string) (TaskProgress, error)
+}
+
+// AuditBackend 提供审计日志查询 + 导出（v8 P0）。
+//
+// Query 返回 limit 条记录（按时间倒序；since 留 v8.1）。
+// Export 写出最近的 exportLimit 条 JSONL 到 w（HTTP 由 handler 流式写出）。
+type AuditBackend interface {
+	Query(ctx context.Context, limit int) ([]AuditRecord, error)
+	Export(ctx context.Context, w io.Writer, exportLimit int) error
 }
 
 // ApprovalsBackend 是 v8 控制台独立维护的 pending 队列。
@@ -139,11 +181,26 @@ var ErrBackendMissing = errors.New("console: backend not configured")
 // ErrPluginNotFound 是 PluginBackend.Enable/Disable 命中未知 name。
 var ErrPluginNotFound = errors.New("console: plugin not found")
 
+// ErrPluginExists 是 PluginBackend.Install 命中已存在 name。
+var ErrPluginExists = errors.New("console: plugin already exists")
+
 // ErrModelNotFound 是 ModelBackend.Update/Ping 命中未知 channel。
 var ErrModelNotFound = errors.New("console: model channel not found")
+
+// ErrModelExists 是 ModelBackend.Create 命中已存在 channel。
+var ErrModelExists = errors.New("console: model channel already exists")
 
 // ErrTaskNotFound 是 TaskBackend.Cancel 命中未知 id。
 var ErrTaskNotFound = errors.New("console: task not found")
 
+// ErrTaskRunning 是 TaskBackend.Retry 命中仍 Running/Pending 的 task。
+var ErrTaskRunning = errors.New("console: task already running")
+
 // ErrApprovalNotFound 是 ApprovalsBackend.Decide 命中未知 id。
 var ErrApprovalNotFound = errors.New("console: approval not found")
+
+// ErrMessageNotFound 是 SessionBackend.EditMessage/DeleteMessage 命中未知 seq。
+var ErrMessageNotFound = errors.New("console: message not found")
+
+// ErrMessageNotEditable 是 SessionBackend.EditMessage 收到 role≠user/system。
+var ErrMessageNotEditable = errors.New("console: message role not editable")

@@ -1,17 +1,25 @@
 <script setup lang="ts">
 // SessionsView.vue
 //
-// 会话列表 + 新建会话（带 title & model 字段）。
+// 会话列表 + 多会话过滤搜索 + 新建会话（带 title & model 字段）。
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus, Trash2, MessageSquare } from 'lucide-vue-next'
+import { Plus, Trash2, MessageSquare, Search } from 'lucide-vue-next'
 import { sessionsApi } from '@/api/sessions'
+import { modelsApi } from '@/api/models'
 import { formatRelative } from '@/utils/format'
+import { useI18n } from '@/i18n'
 
 const router = useRouter()
 const qc = useQueryClient()
+const { t } = useI18n()
+
+const keyword = ref('')
+const showNew = ref(false)
+const newTitle = ref('')
+const newModel = ref('')
 
 const list = useQuery({
   queryKey: ['sessions'],
@@ -19,9 +27,22 @@ const list = useQuery({
   refetchInterval: 5000,
 })
 
-const showNew = ref(false)
-const newTitle = ref('')
-const newModel = ref('deepseek-chat')
+const models = useQuery({
+  queryKey: ['models'],
+  queryFn: modelsApi.list,
+  refetchInterval: 30_000,
+})
+
+const filteredItems = computed(() => {
+  const items = list.data.value?.items ?? []
+  if (!keyword.value.trim()) return items
+  const k = keyword.value.toLowerCase()
+  return items.filter((s) =>
+    (s.title || '').toLowerCase().includes(k) ||
+    (s.preview || '').toLowerCase().includes(k) ||
+    (s.model || '').toLowerCase().includes(k),
+  )
+})
 
 const createMut = useMutation({
   mutationFn: () => sessionsApi.create(newTitle.value || '未命名会话', newModel.value),
@@ -50,27 +71,36 @@ function handleDelete(sid: string) {
 <template>
   <div>
     <div class="flex items-center justify-between mb-2">
-      <h2 class="text-lg font-bold">会话列表</h2>
+      <h2 class="text-lg font-bold">{{ t('sessions.title') }}</h2>
       <button class="btn btn-primary" @click="showNew = !showNew">
         <Plus :size="14" />
-        新建会话
+        {{ t('sessions.newSession') }}
       </button>
+    </div>
+
+    <div class="flex items-center gap-2 mb-2">
+      <Search :size="14" class="text-muted" />
+      <input
+        v-model="keyword"
+        type="search"
+        :placeholder="t('sessions.filter')"
+      />
     </div>
 
     <div v-if="showNew" class="card mb-2">
       <div class="flex gap-3 items-center">
-        <input v-model="newTitle" placeholder="会话标题（可选）" />
+        <input v-model="newTitle" :placeholder="t('sessions.titleLabel')" />
         <select v-model="newModel" style="width: auto; min-width: 180px;">
-          <option value="deepseek-chat">deepseek-chat</option>
-          <option value="deepseek-reasoner">deepseek-reasoner</option>
-          <option value="claude-3-5-sonnet">claude-3-5-sonnet</option>
+          <option v-for="m in models.data.value ?? []" :key="m.channel" :value="m.channel">
+            {{ m.channel }}
+          </option>
         </select>
         <button
           class="btn btn-primary"
           :disabled="createMut.isPending.value"
           @click="createMut.mutate()"
         >
-          {{ createMut.isPending.value ? '创建中…' : '创建' }}
+          {{ createMut.isPending.value ? '创建中…' : t('common.confirm') }}
         </button>
       </div>
       <div v-if="createMut.error.value" class="error-banner mt-2">
@@ -84,14 +114,14 @@ function handleDelete(sid: string) {
 
     <div v-if="list.isLoading.value" class="empty">加载中…</div>
 
-    <div v-else-if="(list.data.value?.items ?? []).length === 0" class="empty">
+    <div v-else-if="filteredItems.length === 0" class="empty">
       <MessageSquare :size="32" style="opacity: 0.3;" />
-      <p>还没有会话。点击右上角"新建会话"开始。</p>
+      <p>{{ t('sessions.empty') }}</p>
     </div>
 
     <div v-else class="list">
       <div
-        v-for="s in list.data.value?.items ?? []"
+        v-for="s in filteredItems"
         :key="s.sid"
         class="card session-card"
         @click="open(s.sid)"

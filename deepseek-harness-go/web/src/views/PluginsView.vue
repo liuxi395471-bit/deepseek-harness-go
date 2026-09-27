@@ -1,11 +1,17 @@
 <script setup lang="ts">
 // PluginsView.vue
+//
+// 插件列表 + 启停 + 安装 / 卸载。
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
-import { Power, Package, RefreshCw } from 'lucide-vue-next'
+import { ref } from 'vue'
+import { Power, Package, RefreshCw, Plus, Trash2 } from 'lucide-vue-next'
 import { pluginsApi } from '@/api/plugins'
+import { useUIStore } from '@/stores/ui'
+import Modal from '@/components/Modal.vue'
 
 const qc = useQueryClient()
+const ui = useUIStore()
 
 const list = useQuery({
   queryKey: ['plugins'],
@@ -16,18 +22,51 @@ const list = useQuery({
 const enableMut = useMutation({
   mutationFn: (n: string) => pluginsApi.enable(n),
   onSuccess: () => qc.invalidateQueries({ queryKey: ['plugins'] }),
+  onError: (e: Error) => ui.reportError(e, '启用失败'),
 })
 const disableMut = useMutation({
   mutationFn: (n: string) => pluginsApi.disable(n),
   onSuccess: () => qc.invalidateQueries({ queryKey: ['plugins'] }),
+  onError: (e: Error) => ui.reportError(e, '停用失败'),
 })
+
+const installMut = useMutation({
+  mutationFn: ({ name, source }: { name: string; source: string }) =>
+    pluginsApi.install(name, source),
+  onSuccess: () => {
+    qc.invalidateQueries({ queryKey: ['plugins'] })
+    ui.pushToast('success', '插件已安装')
+    showInstall.value = false
+    newName.value = ''
+    newSource.value = ''
+  },
+  onError: (e: Error) => ui.reportError(e, '安装失败'),
+})
+const uninstallMut = useMutation({
+  mutationFn: (n: string) => pluginsApi.uninstall(n),
+  onSuccess: () => {
+    qc.invalidateQueries({ queryKey: ['plugins'] })
+    ui.pushToast('success', '插件已卸载')
+  },
+  onError: (e: Error) => ui.reportError(e, '卸载失败'),
+})
+
+const showInstall = ref(false)
+const newName = ref('')
+const newSource = ref('')
 
 function stateBadge(s: string) {
   const v = (s ?? '').toLowerCase()
   if (v === 'enabled' || v === 'loaded' || v === 'active') return 'badge-loaded'
   if (v === 'disabled' || v === 'inactive') return 'badge-disabled'
+  if (v === 'uninstalled') return 'badge-disabled'
   if (v === 'failed' || v === 'error') return 'badge-failed'
   return ''
+}
+
+function handleUninstall(n: string) {
+  if (!window.confirm(`确认卸载 ${n}？`)) return
+  uninstallMut.mutate(n)
 }
 </script>
 
@@ -35,10 +74,16 @@ function stateBadge(s: string) {
   <div>
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-lg font-bold">插件管理</h2>
-      <button class="btn" @click="list.refetch()">
-        <RefreshCw :size="14" />
-        刷新
-      </button>
+      <div class="flex gap-2">
+        <button class="btn btn-primary" @click="showInstall = true">
+          <Plus :size="14" />
+          安装
+        </button>
+        <button class="btn" @click="list.refetch()">
+          <RefreshCw :size="14" />
+          刷新
+        </button>
+      </div>
     </div>
 
     <div v-if="list.error.value" class="error-banner">
@@ -88,10 +133,35 @@ function stateBadge(s: string) {
             >
               停用
             </button>
+            <button class="btn btn-danger" @click="handleUninstall(p.name)">
+              <Trash2 :size="14" />
+              卸载
+            </button>
           </div>
         </div>
       </div>
     </div>
+
+    <Modal :open="showInstall" title="安装插件" @close="showInstall = false" @confirm="installMut.mutate({ name: newName, source: newSource })">
+      <label>
+        <span>插件名称（必填）</span>
+        <input v-model="newName" placeholder="如 echo / fs / my-tool" />
+      </label>
+      <label>
+        <span>来源（可选，仅作标签记录）</span>
+        <input v-model="newSource" placeholder="如 registry:echo-v1 / file:/path" />
+      </label>
+      <template #footer>
+        <button class="btn" @click="showInstall = false">取消</button>
+        <button
+          class="btn btn-primary"
+          :disabled="installMut.isPending.value || !newName.trim()"
+          @click="installMut.mutate({ name: newName, source: newSource })"
+        >
+          {{ installMut.isPending.value ? '安装中…' : '安装' }}
+        </button>
+      </template>
+    </Modal>
   </div>
 </template>
 

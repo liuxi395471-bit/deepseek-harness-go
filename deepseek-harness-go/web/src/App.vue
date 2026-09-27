@@ -8,7 +8,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTokenStore } from '@/stores/token'
+import { useUIStore } from '@/stores/ui'
 import { client } from '@/api/client'
+import { useI18n } from '@/i18n'
 import {
   MessageSquare,
   Package,
@@ -17,27 +19,58 @@ import {
   ShieldCheck,
   LogOut,
   Monitor,
+  Moon,
+  Sun,
+  RefreshCw,
+  Languages,
 } from 'lucide-vue-next'
+import ToastStack from '@/components/ToastStack.vue'
 
 const router = useRouter()
 const tokenStore = useTokenStore()
+const uiStore = useUIStore()
+const { locale, setLocale, t } = useI18n()
 
 const tokenInput = ref(tokenStore.token)
 const healthState = ref<'unknown' | 'ok' | 'failed'>('unknown')
+const buildVersion = ref<string>('v8.0.0-dev')
+const buildStamp = ref<string>('')
 
 // 启动器模式：通过 ?from=desktop 进入时启用
 const isDesktop = ref(false)
 const desktopInfo = ref<{ version?: string; pid?: string } | null>(null)
 
-const nav = [
-  { to: '/sessions', label: '会话', icon: MessageSquare },
-  { to: '/plugins', label: '插件', icon: Package },
-  { to: '/models', label: '模型', icon: Cpu },
-  { to: '/tasks', label: '任务', icon: ListTodo },
-  { to: '/approvals', label: '审批', icon: ShieldCheck },
-]
+const nav = computed(() => [
+  { to: '/sessions', label: t('nav.sessions'), icon: MessageSquare },
+  { to: '/plugins', label: t('nav.plugins'), icon: Package },
+  { to: '/models', label: t('nav.models'), icon: Cpu },
+  { to: '/tasks', label: t('nav.tasks'), icon: ListTodo },
+  { to: '/approvals', label: t('nav.approvals'), icon: ShieldCheck },
+])
 
-onMounted(() => {
+async function fetchVersion() {
+  try {
+    const { data } = await client.get<{ version: string }>('/health')
+    if (data?.version && data.version !== 'dev') {
+      buildVersion.value = 'v' + data.version
+    }
+  } catch {
+    /* ignore：未连接时静默 */
+  }
+  try {
+    const r = await fetch('/api/v1/console/state?key=buildStamp', {
+      headers: tokenStore.token ? { Authorization: `Bearer ${tokenStore.token}` } : {},
+    })
+    if (r.ok) {
+      const j = await r.json()
+      if (j?.value) buildStamp.value = j.value
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+onMounted(async () => {
   const params = new URLSearchParams(window.location.search)
   isDesktop.value = params.get('from') === 'desktop'
   // 桌面模式下从 URL 读取 token（启动器生成并注入）
@@ -56,7 +89,8 @@ onMounted(() => {
     const stored = localStorage.getItem('dsh.console.token')
     if (stored) tokenStore.setToken(stored)
   }
-  if (tokenStore.token) pingHealth()
+  if (tokenStore.token) await pingHealth()
+  await fetchVersion()
   if (isDesktop.value) {
     fetch('/api/v1/console/state?key=desktop', { headers: { Authorization: `Bearer ${tokenStore.token}` } })
       .then((r) => (r.ok ? r.json() : null))
@@ -72,6 +106,7 @@ onMounted(() => {
 async function saveToken() {
   tokenStore.setToken(tokenInput.value.trim())
   await pingHealth()
+  await fetchVersion()
 }
 
 async function pingHealth() {
@@ -90,10 +125,14 @@ function logout() {
   router.push('/sessions')
 }
 
+function changeLocale() {
+  setLocale(locale.value === 'zh-CN' ? 'en-US' : 'zh-CN')
+}
+
 const connectionLabel = computed(() => {
-  if (healthState.value === 'ok') return '已连接'
-  if (healthState.value === 'failed') return '认证失败'
-  return '未连接'
+  if (healthState.value === 'ok') return t('common.connected')
+  if (healthState.value === 'failed') return t('common.authFailed')
+  return t('common.disconnected')
 })
 </script>
 
@@ -102,8 +141,8 @@ const connectionLabel = computed(() => {
     <header class="topbar">
       <div class="brand">
         <span class="logo">⚡</span>
-        <span class="title">DeepSeek Harness · 控制台</span>
-        <span class="version">v8.0.0-dev</span>
+        <span class="title">{{ t('app.brand') }}</span>
+        <span class="version">{{ buildVersion }}<span v-if="buildStamp"> · {{ buildStamp }}</span></span>
       </div>
       <div class="token-form">
         <template v-if="!isDesktop">
@@ -113,8 +152,11 @@ const connectionLabel = computed(() => {
             placeholder="Bearer token"
             @keyup.enter="saveToken"
           />
-          <button class="btn" @click="saveToken">连接</button>
-          <button v-if="tokenStore.token" class="btn" @click="logout" title="登出">
+          <button class="btn" @click="saveToken">
+            <RefreshCw :size="14" />
+            {{ t('common.connect') }}
+          </button>
+          <button v-if="tokenStore.token" class="btn" @click="logout" :title="t('common.disconnect')">
             <LogOut :size="14" />
           </button>
         </template>
@@ -123,8 +165,16 @@ const connectionLabel = computed(() => {
           <span class="badge badge-loaded">桌面模式</span>
           <span class="text-xs text-muted">自动连接本地 dsh</span>
         </template>
+        <button class="btn" @click="uiStore.toggleTheme" :title="uiStore.theme === 'light' ? t('common.theme.dark') : t('common.theme.light')">
+          <component :is="uiStore.theme === 'light' ? Moon : Sun" :size="14" />
+        </button>
+        <button class="btn" @click="changeLocale" :title="t('common.language')">
+          <Languages :size="14" />
+          <span class="text-xs">{{ locale === 'zh-CN' ? 'EN' : '中' }}</span>
+        </button>
         <span v-if="healthState === 'ok'" class="badge badge-loaded">{{ connectionLabel }}</span>
         <span v-else-if="healthState === 'failed'" class="badge badge-failed">{{ connectionLabel }}</span>
+        <span v-else class="badge">{{ connectionLabel }}</span>
       </div>
     </header>
 
@@ -144,7 +194,9 @@ const connectionLabel = computed(() => {
         </nav>
       </aside>
       <main class="content">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <component :is="Component" :key="buildStamp + locale" />
+        </router-view>
       </main>
     </div>
 
@@ -153,6 +205,8 @@ const connectionLabel = computed(() => {
       <span class="text-muted">pid={{ desktopInfo?.pid ?? '-' }}</span>
       <span class="text-muted">{{ connectionLabel }}</span>
     </footer>
+
+    <ToastStack />
   </div>
 </template>
 
@@ -170,6 +224,10 @@ const connectionLabel = computed(() => {
   background: #1a202c;
   color: #fff;
   border-bottom: 1px solid #2d3748;
+}
+:global([data-theme="dark"]) .topbar {
+  background: #020617;
+  border-bottom-color: #1e293b;
 }
 .brand {
   display: flex;
@@ -240,10 +298,10 @@ const connectionLabel = computed(() => {
   text-decoration: none;
 }
 .nav-item:hover {
-  background: #edf2f7;
+  background: var(--border);
 }
 .nav-item.active {
-  background: #ebf4ff;
+  background: var(--bg);
   border-left-color: var(--accent);
   color: var(--accent);
   font-weight: 500;

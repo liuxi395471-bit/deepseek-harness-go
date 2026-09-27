@@ -74,3 +74,7 @@ func (f *fakeTaskExec) List(_ context.Context, filter task.Filter) ([]*task.Task
 	}
 	return out, nil
 }
+
+func (f *fakeTaskExec) Retry(ctx context.Context, id string) (*task.Task, error) {
+	return f.Submit(ctx, task.SubmitRequest{})
+}

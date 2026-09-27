@@ -44,6 +44,8 @@ type SendResult struct {
 //   - Delete: 幂等。
 //   - Send: 阻塞直到 loop 结束；调用方把返回再写入 Store。
 //   - SendStream: 流式推送（SendResult + 多个中间帧）。
+//   - EditMessage: 替换 user/system 消息的 content（v8 P0）。
+//   - DeleteMessage: 删除消息（v8 P0）。
 type SessionBackend interface {
 	List(ctx context.Context, limit int, cursor string) ([]SessionItem, error)
 	Get(ctx context.Context, sid string) (SessionDetail, error)
@@ -52,6 +54,10 @@ type SessionBackend interface {
 	Send(ctx context.Context, sid, content string) (SendResult, error)
 	// SendStream 推送消息到 sid；out 是 SSE frame 通道；调用方负责 close。
 	SendStream(ctx context.Context, sid, content string, out chan<- SessionFrame) error
+	// EditMessage 修改 sid 中 seq=msgSeq 的 user/system 消息内容。
+	EditMessage(ctx context.Context, sid string, msgSeq int64, newContent string) error
+	// DeleteMessage 删除 sid 中 seq=msgSeq 的消息（保留空位）。
+	DeleteMessage(ctx context.Context, sid string, msgSeq int64) error
 }
 
 // SessionFrame 是 SendStream 输出的一帧（与 server/eventToFrame 同形）。

@@ -1,23 +1,21 @@
 <script setup lang="ts">
 // SessionDetailView.vue
 //
-// 单个会话详情 + 输入框 + 流式 SSE 渲染。
-// 消息结构（前端动态拼接）：
-//   - 用户消息 → 用户气泡
-//   - assistant 流式累积（onFrame event === 'delta'）→ 助手气泡
-//   - tool_call → 折叠块
-//   - usage 在最后一条消息后显示
+// 单个会话详情 + 输入框 + 流式 SSE 渲染 + 消息编辑/删除 + Token 用量明细。
 
-import { useQuery } from '@tanstack/vue-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import { computed, ref, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Send, ArrowLeft, Wrench } from 'lucide-vue-next'
+import { Send, ArrowLeft, Wrench, Pencil, Trash2, Save, X } from 'lucide-vue-next'
 import { sessionsApi } from '@/api/sessions'
 import { formatTime } from '@/utils/format'
+import { useUIStore } from '@/stores/ui'
+import Modal from '@/components/Modal.vue'
 import MarkdownView from '@/components/MarkdownView.vue'
 
 interface UiMessage {
   id: string
+  seq?: number
   role: 'user' | 'assistant' | 'tool' | 'system'
   content: string
   toolCalls?: Array<{ id: string; name: string; args: string }>
@@ -28,6 +26,8 @@ interface UiMessage {
 
 const route = useRoute()
 const router = useRouter()
+const qc = useQueryClient()
+const ui = useUIStore()
 
 const sid = computed(() => decodeURIComponent(String(route.params.sid ?? '')))
 
@@ -37,16 +37,41 @@ const detail = useQuery({
   enabled: computed(() => !!sid.value),
 })
 
-// 前端累积的"实时消息"列表（API 返回的是历史，pending 的是正在流式输出）
 const live = ref<UiMessage[]>([])
 const draft = ref('')
 const sending = ref(false)
 const abortCtrl = ref<AbortController | null>(null)
 const scrollEl = ref<HTMLElement | null>(null)
 
+const editOpen = ref(false)
+const editSeq = ref<number | null>(null)
+const editContent = ref('')
+
+const deleteMut = useMutation({
+  mutationFn: ({ seq }: { seq: number }) => sessionsApi.deleteMessage(sid.value, seq),
+  onSuccess: () => {
+    detail.refetch()
+    ui.pushToast('success', '消息已删除')
+  },
+  onError: (e: Error) => ui.reportError(e, '删除失败'),
+})
+
+const editMut = useMutation({
+  mutationFn: ({ seq, content }: { seq: number; content: string }) =>
+    sessionsApi.editMessage(sid.value, seq, content),
+  onSuccess: () => {
+    editOpen.value = false
+    detail.refetch()
+    qc.invalidateQueries({ queryKey: ['session', sid] })
+    ui.pushToast('success', '消息已更新')
+  },
+  onError: (e: Error) => ui.reportError(e, '编辑失败'),
+})
+
 const allMessages = computed<UiMessage[]>(() => {
   const historical: UiMessage[] = (detail.data.value?.messages ?? []).map((m, i) => ({
     id: `hist-${i}`,
+    seq: (m as any).seq ?? i,
     role: m.role,
     content: m.content ?? '',
     toolCalls: m.tool_calls?.map((tc) => ({
@@ -62,20 +87,27 @@ const allMessages = computed<UiMessage[]>(() => {
 
 const usage = computed(() => detail.data.value?.usage)
 const totalTokens = computed(() => usage.value?.totalTokens ?? 0)
+const promptTokens = computed(() => usage.value?.promptTokens ?? 0)
+const completionTokens = computed(() => usage.value?.completionTokens ?? 0)
+// ds-java 控制台还会把"已缓存" / "reasoning" 拆出；ds-go 当前 Usage
+// 只暴露 prompt + completion + total。计算 cacheTokens = total - 其他。
+const cacheTokens = computed(() =>
+  Math.max(0, totalTokens.value - promptTokens.value - completionTokens.value),
+)
+
+const rounds = computed(() => detail.data.value?.rounds ?? 0)
 
 async function send() {
   const text = draft.value.trim()
   if (!text || sending.value) return
   draft.value = ''
 
-  // 把用户消息加到 live
   const userMsg: UiMessage = {
     id: `u-${Date.now()}`,
     role: 'user',
     content: text,
     ts: Date.now(),
   }
-  // assistant 占位
   const aMsg: UiMessage = {
     id: `a-${Date.now()}`,
     role: 'assistant',
@@ -95,23 +127,41 @@ async function send() {
       text,
       (frame) => {
         const ev = frame.event
-        const d = frame.data
-        if (ev === 'delta') {
+        const d = frame.data as Record<string, unknown>
+        if (ev === 'assistant_delta') {
           aMsg.content += String(d.text ?? '')
-        } else if (ev === 'tool_call') {
+        } else if (ev === 'tool_call_start') {
+          const call = (d.call as any) ?? {}
           aMsg.toolCalls = [
             ...(aMsg.toolCalls ?? []),
             {
-              id: String(d.id ?? ''),
-              name: String(d.name ?? ''),
-              args: JSON.stringify(d.args ?? {}, null, 2),
+              id: String(call.id ?? ''),
+              name: String(call.function?.name ?? ''),
+              args: JSON.stringify(call.function?.arguments ?? {}, null, 2),
             },
           ]
-        } else if (ev === 'done' || ev === 'finish') {
+        } else if (ev === 'assistant_message') {
+          aMsg.content += ''
+        } else if (ev === 'tool_result') {
+          const name = String(d.name ?? 'tool')
+          const content = String(d.content ?? '')
+          const isErr = Boolean(d.isError)
+          live.value = [
+            ...live.value,
+            {
+              id: `t-${Date.now()}`,
+              role: 'tool',
+              content,
+              ts: Date.now(),
+              toolCallId: String(d.callId ?? ''),
+              toolCalls: undefined,
+            },
+          ]
+        } else if (ev === 'loop_done') {
           aMsg.pending = false
           detail.refetch()
-        } else if (ev === 'error') {
-          aMsg.content += `\n\n[error] ${String(d.message ?? '')}`
+        } else if (ev === 'loop_error') {
+          aMsg.content += `\n\n[error] ${String(d.err ?? '')}`
           aMsg.pending = false
         }
       },
@@ -123,6 +173,7 @@ async function send() {
     aMsg.pending = false
     sending.value = false
     abortCtrl.value = null
+    await nextTick()
     scrollToBottom()
     detail.refetch()
   }
@@ -136,6 +187,30 @@ function scrollToBottom() {
   if (!scrollEl.value) return
   scrollEl.value.scrollTop = scrollEl.value.scrollHeight
 }
+
+function openEdit(msg: UiMessage) {
+  if (msg.role !== 'user' && msg.role !== 'system') {
+    ui.pushToast('error', '助手 / 工具消息不可编辑')
+    return
+  }
+  editSeq.value = msg.seq ?? null
+  editContent.value = msg.content
+  editOpen.value = true
+}
+
+function confirmEdit() {
+  if (editSeq.value == null || !editContent.value.trim()) return
+  editMut.mutate({ seq: editSeq.value, content: editContent.value.trim() })
+}
+
+function confirmDelete(msg: UiMessage) {
+  if (msg.seq == null) {
+    ui.pushToast('error', '本条消息无 seq（流式中）')
+    return
+  }
+  if (!window.confirm('删除这条消息？')) return
+  deleteMut.mutate({ seq: msg.seq })
+}
 </script>
 
 <template>
@@ -145,9 +220,33 @@ function scrollToBottom() {
         <ArrowLeft :size="14" />
         返回
       </button>
-      <h2 class="text-lg font-bold">{{ detail.data.value?.title || '会话详情' }}</h2>
-      <div class="text-sm text-muted">
-        {{ detail.data.value?.model }} · {{ allMessages.length }} 条消息 · {{ totalTokens }} tokens
+      <div style="flex: 1; min-width: 0;">
+        <h2 class="text-lg font-bold">{{ detail.data.value?.title || '会话详情' }}</h2>
+        <div class="text-sm text-muted">
+          模型 {{ detail.data.value?.model || '—' }} · {{ allMessages.length }} 条消息 · {{ rounds }} 轮
+        </div>
+      </div>
+      <div class="usage-card">
+        <div class="usage-title">Token 用量</div>
+        <div class="usage-row">
+          <span class="usage-label">prompt</span>
+          <span class="usage-bar"><span :style="{ width: totalTokens ? (promptTokens / totalTokens) * 100 + '%' : '0%' }" /></span>
+          <span class="usage-value">{{ promptTokens }}</span>
+        </div>
+        <div class="usage-row">
+          <span class="usage-label">completion</span>
+          <span class="usage-bar"><span :style="{ width: totalTokens ? (completionTokens / totalTokens) * 100 + '%' : '0%' }" /></span>
+          <span class="usage-value">{{ completionTokens }}</span>
+        </div>
+        <div v-if="cacheTokens" class="usage-row">
+          <span class="usage-label">cache</span>
+          <span class="usage-bar"><span :style="{ width: totalTokens ? (cacheTokens / totalTokens) * 100 + '%' : '0%' }" /></span>
+          <span class="usage-value">{{ cacheTokens }}</span>
+        </div>
+        <div class="usage-row usage-total">
+          <span class="usage-label">total</span>
+          <span class="usage-value">{{ totalTokens }}</span>
+        </div>
       </div>
     </div>
 
@@ -165,7 +264,15 @@ function scrollToBottom() {
       >
         <div class="meta">
           <span class="role">{{ m.role }}</span>
-          <span class="ts">#{{ m.id.slice(-6) }}</span>
+          <span class="ts">#{{ m.seq ?? m.id.slice(-6) }} · {{ formatTime(new Date(m.ts)) }}</span>
+          <div class="msg-actions">
+            <button v-if="m.role === 'user' || m.role === 'system'" class="icon-btn" title="编辑" @click="openEdit(m)">
+              <Pencil :size="12" />
+            </button>
+            <button v-if="!m.pending" class="icon-btn" title="删除" @click="confirmDelete(m)">
+              <Trash2 :size="12" />
+            </button>
+          </div>
         </div>
         <MarkdownView v-if="m.role === 'assistant' || m.role === 'system'" :source="m.content || (m.pending ? '…' : '')" />
         <div v-else class="content">{{ m.content }}</div>
@@ -191,13 +298,30 @@ function scrollToBottom() {
         @keydown.enter.exact.prevent="send"
       />
       <div class="composer-actions">
-        <button v-if="sending" class="btn btn-danger" @click="abort">停止</button>
+        <button v-if="sending" class="btn btn-danger" @click="abort">
+          <X :size="14" />
+          停止
+        </button>
         <button class="btn btn-primary" :disabled="sending || !draft.trim()" @click="send">
           <Send :size="14" />
           {{ sending ? '生成中…' : '发送' }}
         </button>
       </div>
     </div>
+
+    <Modal :open="editOpen" title="编辑消息" @close="editOpen = false" @confirm="confirmEdit">
+      <label>
+        <span>新内容</span>
+        <textarea v-model="editContent" rows="6" />
+      </label>
+      <template #footer>
+        <button class="btn" @click="editOpen = false">取消</button>
+        <button class="btn btn-primary" :disabled="editMut.isPending.value || !editContent.trim()" @click="confirmEdit">
+          <Save :size="14" />
+          {{ editMut.isPending.value ? '保存中…' : '保存' }}
+        </button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -215,6 +339,51 @@ function scrollToBottom() {
   border-bottom: 1px solid var(--border);
   margin-bottom: 12px;
 }
+.usage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  min-width: 220px;
+  font-size: 11px;
+}
+.usage-title {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.usage-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.usage-label {
+  width: 70px;
+  color: var(--text-muted);
+}
+.usage-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.usage-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.usage-value {
+  font-variant-numeric: tabular-nums;
+  min-width: 50px;
+  text-align: right;
+}
+.usage-total .usage-value {
+  font-weight: 600;
+}
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -227,31 +396,57 @@ function scrollToBottom() {
   border-radius: 8px;
   padding: 10px 14px;
   max-width: 90%;
-  background: #f7fafc;
+  background: var(--bg-card);
   border: 1px solid var(--border);
 }
 .msg.role-user {
   align-self: flex-end;
-  background: #ebf4ff;
-  border-color: #bee3f8;
+  background: var(--bg);
+  border-color: var(--accent);
 }
 .msg.role-assistant {
   align-self: flex-start;
 }
 .msg.role-tool {
   align-self: flex-start;
-  background: #fefcbf;
-  border-color: #f6e05e;
+  background: var(--warning-bg);
+  border-color: var(--warning);
+}
+:global([data-theme="dark"]) .msg.role-user {
+  background: #1e3a5f;
+  border-color: var(--accent);
 }
 .msg.pending {
   opacity: 0.7;
 }
 .meta {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
   font-size: 11px;
   color: var(--text-muted);
   margin-bottom: 6px;
+}
+.role {
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.msg-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+.icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  border-radius: 4px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.icon-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 .content {
   white-space: pre-wrap;

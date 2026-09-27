@@ -157,3 +157,55 @@ func (r *MemoryRegistry) ResolveModel(code string) (string, error) {
 	}
 	return e.cfg.Model, nil
 }
+
+// Upsert 注册或替换 code 渠道。replace=true 时如果 code 已存在则替
+// 换 LLMConfig + 重置 client 缓存；replace=false 时重复 code 报错。
+//
+// 主要用于 v8 控制台"新增 / 编辑渠道"按钮。
+func (r *MemoryRegistry) Upsert(code string, cfg config.LLMConfig, replace bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, dup := r.entries[code]; dup && !replace {
+		return fmt.Errorf("runtime: duplicate channel code %q", code)
+	}
+	entry := cfg
+	if entry.Timeout == 0 {
+		entry.Timeout = 120 * time.Second
+	}
+	client, err := provider.NewClient(entry)
+	if err != nil {
+		return fmt.Errorf("runtime: channel %q: %w", code, err)
+	}
+	r.entries[code] = &channelEntry{cfg: entry, client: client}
+	if _, dup := r.entries[code]; !dup || replace {
+		// ensure in order
+		found := false
+		for _, c := range r.order {
+			if c == code {
+				found = true
+				break
+			}
+		}
+		if !found {
+			r.order = append(r.order, code)
+		}
+	}
+	return nil
+}
+
+// Remove 卸载 code 渠道；不存在返回 ErrUnknownChannel。
+func (r *MemoryRegistry) Remove(code string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.entries[code]; !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownChannel, code)
+	}
+	delete(r.entries, code)
+	for i, c := range r.order {
+		if c == code {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+			break
+		}
+	}
+	return nil
+}

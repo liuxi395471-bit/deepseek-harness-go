@@ -824,6 +824,12 @@ func (a *singleChannelModelAdapter) List(_ context.Context) ([]console.ModelItem
 func (a *singleChannelModelAdapter) Update(_ context.Context, _ string, _ console.ModelItem) error {
 	return nil
 }
+func (a *singleChannelModelAdapter) Create(_ context.Context, _ console.ModelItem) error {
+	return console.ErrModelExists
+}
+func (a *singleChannelModelAdapter) Remove(_ context.Context, channel string) error {
+	return console.ErrModelNotFound
+}
 func (a *singleChannelModelAdapter) Ping(ctx context.Context, channel string) (console.PingResult, error) {
 	start := time.Now()
 	resp, err := a.client.Chat(ctx, llm.ChatRequest{

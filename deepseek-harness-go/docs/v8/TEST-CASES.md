@@ -191,3 +191,149 @@
 | 0006 | 手工 | ✅ |
 | 0007 | go test | ✅ |
 | 0008 | 手工 | ✅ |
+
+---
+
+## P0 批次（v8.0.0-P0）：Web Console 体验与对齐增强
+
+> 8 个手工 E2E 用例，覆盖 v8 P0 全部 14 项 UI 小项补齐。
+>
+> 后端 / 前端组件：见 `internal/console/handler_p0.go`、`internal/store/{mem,sqlite}.go`、
+> `web/src/{views,components,stores}/*`。
+
+### 测试矩阵
+
+| ID | 主题 | 涉及模块 | 自动化 |
+|---|---|---|---|
+| TC-v8-0009 | 会话删除真删除 + 消息编辑 / 删除 + 搜索过滤 | `store/Messages`, `web/SessionDetail` | go test + 手工 |
+| TC-v8-0010 | 模型渠道新建 / 删除 + 任务提交 / 重试 | `runtime/MemoryRegistry.Upsert`, `task.LoopExecutor.Retry` | go test |
+| TC-v8-0011 | 插件安装 / 卸载 | `installer.StatusStore`, `console.PluginsAdapter` | go test |
+| TC-v8-0012 | 审批批量 allow / deny | `console.handleDecideApprovalsBatch` | go test |
+| TC-v8-0013 | 审计查询 / JSONL 导出 | `console.AuditAdapter` | go test |
+| TC-v8-0014 | 主题切换 (light/dark) + i18n (zh-CN / en-US) + 全局 toast | `web/stores/ui`, `web/i18n` | 手工 |
+| TC-v8-0015 | 错误浮窗 + 全局缓存破除（buildStamp） | `web/api/client`, `web/App.vue` | 手工 |
+| TC-v8-0016 | 缓存破除版本号（`?v=` 与 buildStamp 注入） | `web/App.vue` | 手工 |
+
+---
+
+### TC-v8-0009：Session 真删除 + 消息编辑 / 删除 + 搜索
+
+**前置**：`dsh.exe -serve`，DSH_SERVER_AUTH_TOKEN=xxx
+
+**步骤**：
+1. POST `/api/v1/console/sessions/` → 200，记下 sid
+2. POST `/api/v1/console/sessions/{sid}/messages` → 触发 loop，结束后 GET 该会话，messages 至少 2 条
+3. PATCH `/api/v1/console/sessions/{sid}/messages/0` body `{"content":"EDITED"}` → 200
+4. GET 该会话，确认 messages[0].content == "EDITED"
+5. DELETE `/api/v1/console/sessions/{sid}/messages/0` → 200
+6. GET 该会话，确认 messages[0].content == ""（seq 保留空位）
+7. DELETE `/api/v1/console/sessions/{sid}` → 200
+8. GET `/api/v1/console/sessions/{sid}` → 404
+9. UI：Sessions 页关键字 "EDITED" / "smoke" 应过滤命中；空关键字显示全部
+
+**自动化**：`internal/console/handler_p0_test.go::TestEditAndDeleteMessage / TestDeleteMessage`
+
+---
+
+### TC-v8-0010：模型渠道新建 / 删除 + 任务提交 / 重试
+
+**步骤**：
+1. POST `/api/v1/console/models` body `{"channel":"c1","model":"m1","protocol":"openai-compatible"}` → 201
+2. 重复 POST → 409 (CONFLICT, ErrModelExists)
+3. DELETE `/api/v1/console/models/c1` → 200
+4. POST `/api/v1/console/tasks` body `{"title":"t","input":"hi"}` → 201，记下 task id
+5. POST `/api/v1/console/tasks/{id}/retry` → 201，新分配 id
+6. POST `/api/v8-0010/{running-id}/retry` → 409 (CONFLICT, ErrTaskRunning)
+
+**自动化**：`internal/console/handler_p0_test.go::TestModelCreateAndAuditQuery / TestTaskSubmitAndRetry`
+
+---
+
+### TC-v8-0011：插件安装 / 卸载
+
+**步骤**：
+1. POST `/api/v1/console/plugins/{name}/install` body `{"source":""}` → 200
+2. 重复 → 409 (CONFLICT, ErrPluginExists)
+3. POST `/api/v1/console/plugins/{missing}/install` → 404 (PLUGIN_NOT_FOUND)
+4. POST `/api/v1/console/plugins/{name}/uninstall` → 200
+5. 卸载后再 uninstall → 404
+
+**自动化**：`internal/console/handler_p0_test.go::TestPluginInstallUninstall`
+
+---
+
+### TC-v8-0012：审批批量 allow / deny
+
+**步骤**：
+1. Enqueue 两条 ApprovalItem（id1, id2）
+2. POST `/api/v1/console/approvals/decide-batch` body `{"ids":[id1,id2],"decision":"deny"}` → 200，`total=2, failed=[]`
+3. 队列为空
+
+**自动化**：`internal/console/handler_p0_test.go::TestApprovalBatchDecide`
+
+---
+
+### TC-v8-0013：审计查询 + JSONL 导出
+
+**步骤**：
+1. 准备 audit.jsonl 写入若干行（含 tool_call / llm_call）
+2. GET `/api/v1/console/audit?limit=10` → 200，返回倒序 items
+3. GET `/api/v1/console/audit/export?limit=10` → 200，Content-Type=`application/x-ndjson`，每行一条 JSON
+4. 文件名 `audit.jsonl`（由 Content-Disposition）
+
+**自动化**：`internal/console/handler_p0_test.go::TestModelCreateAndAuditQuery`
+
+---
+
+### TC-v8-0014：主题切换 + i18n + toast
+
+**步骤**：
+1. App.vue 右上角点 🌙 → 主题切到深色；document.documentElement.dataset.theme = "dark"
+2. 点 ☀️ → 恢复浅色
+3. 点击 🌐（EN / 中） → 顶部 brand 从 "DeepSeek Harness · 控制台" 切到 "DeepSeek Harness · Console"，nav 标签切到英文
+4. 切回 zh-CN
+5. 触发一次操作失败（停用一个不存在的插件 / POST /plugins/nonexistent/disable 已被 stub OK；或用 audit/query 给 limit=0）
+6. 右上方弹出 toast，"error" 红条，4s 后自动消失
+
+**自动化**：手工 E2E
+
+---
+
+### TC-v8-0015：全局错误浮窗 + axios interceptor 推送
+
+**步骤**：
+1. 把 token 改成无效 → 拉列表 → toast 弹 "invalid bearer token"
+2. 弹框右上"×"可立即关闭
+3. 多个错误并发 → 多 toast 纵向堆叠
+
+**自动化**：`web/src/api/client.ts::response interceptor`
+
+---
+
+### TC-v8-0016：缓存破除版本号
+
+**步骤**：
+1. GET `/api/v1/console/health/` → 200，body 包含 `version`
+2. App.vue 把 `version` 显示在顶栏，伴随一个 buildStamp（来自 `<workspace>/dsh.json` 或 dsh 启动时注入的 ISO 时间）
+3. 切换语言 / 重新登录：buildStamp 不变即走旧缓存
+4. 重启 dsh → buildStamp 变新 → Vue Router 触发 `<router-view :key="buildStamp">` 强制重挂载
+
+**自动化**：手工 E2E
+
+---
+
+## P0 验证汇总
+
+| TC | 主题 | go test | 手工 |
+|---|---|---|---|
+| 0009 | 会话删除 + 消息编辑/删除 + 搜索 | ✅ handler_p0_test | ✅ |
+| 0010 | 模型新建/删除 + 任务提交/重试 | ✅ handler_p0_test | ✅ |
+| 0011 | 插件安装/卸载 | ✅ handler_p0_test | ✅ |
+| 0012 | 审批批量 | ✅ handler_p0_test | ✅ |
+| 0013 | 审计查询/导出 | ✅ handler_p0_test | ✅ |
+| 0014 | 主题 + i18n + toast | — | ✅ |
+| 0015 | 全局错误浮窗 | — | ✅ |
+| 0016 | 缓存破除 | — | ✅ |
+
+P0 阶段：14 项 UI 小项对应后端 6 个新接口 + 8 个 Vue 组件。
+零变更前既有 TC-v8-0001 ~ 0008 全部保持通过。

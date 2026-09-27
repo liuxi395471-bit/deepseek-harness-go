@@ -142,7 +142,7 @@ type SubmitRequest struct {
 
 // Executor 是 Task 的运行时契约。
 //
-// 并发安全：调用方可并发 Submit / Cancel / Get / List。
+// 并发安全：调用方可并发 Submit / Cancel / Get / List / Retry。
 type Executor interface {
 	// Submit 创建并启动一个 Task（同步等待状态切到 Running 后立即返回）。
 	// 内部启动 goroutine 跑 loop；调用方通过 Get / List 跟踪进度。
@@ -152,12 +152,21 @@ type Executor interface {
 	// 若 Task 已处于终止态（Completed / Failed / Canceled）则返回 nil。
 	Cancel(ctx context.Context, taskID string) error
 
+	// Retry 重跑已终止的 Task（Failed / Canceled），复用其 Input。
+	// 实际行为：以原 Task 为基础分配新 id，Insert 为 Pending，
+	// 启动 goroutine 执行（=一次"重新提交"）。
+	// 已处于 Running / Pending 返回 ErrAlreadyRunning；找不到返回 ErrNotFound。
+	Retry(ctx context.Context, taskID string) (*Task, error)
+
 	// Get 返回 Task 当前快照。taskID 不存在返回 ErrNotFound。
 	Get(ctx context.Context, taskID string) (*Task, error)
 
 	// List 按 filter 返回 Task 列表（按 UpdatedAt 降序）。
 	List(ctx context.Context, filter Filter) ([]*Task, error)
 }
+
+// ErrAlreadyRunning 在 Retry 一个仍在 Running/Pending 的 Task 时返回。
+var ErrAlreadyRunning = errors.New("task: already running")
 
 // ErrNotFound 在 taskID 未找到时返回。
 var ErrNotFound = errors.New("task: not found")

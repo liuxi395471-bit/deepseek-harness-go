@@ -12,6 +12,7 @@ export interface SessionItem {
 
 export interface SessionDetail extends SessionItem {
   messages: Array<{
+    seq?: number
     role: 'system' | 'user' | 'assistant' | 'tool'
     content?: string
     tool_calls?: Array<{

@@ -9,6 +9,7 @@ import { VueQueryPlugin, QueryClient } from '@tanstack/vue-query'
 import App from './App.vue'
 import { router } from './router'
 import './styles/main.css'
+import { useUIStore } from './stores/ui'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,7 +23,12 @@ const queryClient = new QueryClient({
 })
 
 const app = createApp(App)
-app.use(createPinia())
+const pinia = createPinia()
+app.use(pinia)
+
+// 提前初始化 ui store 以确保 data-theme 在 mounted 前已应用（避免 flash）。
+useUIStore()
+
 app.use(router)
 app.use(VueQueryPlugin, { queryClient })
 app.mount('#app')
