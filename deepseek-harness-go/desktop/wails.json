@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "dsh-desktop",
+  "outputfilename": "dsh-desktop",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "DeepSeek Harness"
+  },
+  "info": {
+    "companyName": "DeepSeek",
+    "productName": "DeepSeek Harness Desktop",
+    "productVersion": "8.0.0",
+    "copyright": "Copyright (c) 2026 DeepSeek",
+    "comments": "Optional Wails v2 build target — currently the desktop launcher is the primary distribution."
+  }
+}

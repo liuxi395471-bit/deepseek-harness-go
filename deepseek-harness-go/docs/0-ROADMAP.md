@@ -120,7 +120,7 @@ ds-go 的**最终目标**：
 | **v5** | 安全与可观测基线（写租约 / Token 计量 / 渠道 / 凭据 / 审批矩阵 / Hook）| 5–7d | 🔴 必经 | ✅ 完成（tag v5.0.0） |
 | **v6** | 任务系统 + 工作流（Task / Workflow / Goal / Plan / Todo / Jobs / Terminal / Storage）| 5–6d | 🟡 必经 | ✅ 完成（tag v6.0.0） |
 | **v7** | 生态与协议互通（Node Bridge / MCP multi-transport / ACP / SDK / LSP / AgentTeam）| 6–8d | 🟢 选做 | ✅ 完成（tag v7.0.0） |
-| **v8** | Web Console + Desktop（Vite+Vue 3 + Wails v2）| 8–10d | 🟢 选做 | 🚧 实施中（P8-1 ✅ / P8-2 ✅ / P8-3 ☐）|
+| **v8** | Web Console + Desktop（Vite+Vue 3 + Wails v2）| 8–10d | 🟢 选做 | ✅ 完成（P8-1/P8-2/P8-3 全部 ✅；待 tag v8.0.0）|
 **v5 / v6 / v7 均已 ✅ 完成**；核心差距已全部覆盖。
 **完整对齐上游 ds-ts 主体能力预计还需 1–2 个版本**（v8 + 任意后续；剩余项均为可选）。
 
@@ -290,7 +290,7 @@ internal/
 
 ### v8 — Web Console + Desktop
 
-**状态**：🚧 实施中（2026-09-27）；P8-1 ✅ / P8-2 ✅ / P8-3 ☐ 待启动
+**状态**：✅ 完成（2026-09-27）；P8-1/P8-2/P8-3 全部 ✅；待 tag v8.0.0
 **主题**：把 ds-go 提升到"产品级"用户体验
 **工时**：8–10 天
 **优先级**：🟢 选做
@@ -359,6 +359,6 @@ internal/
 
 ---
 
-**版本**：0-ROADMAP v0.8（2026-09-27：v5/v6/v7 全部 ✅；v8 实施中 — P8-1/P8-2 ✅ / P8-3 ☐）
+**版本**：0-ROADMAP v0.9（2026-09-27：v5/v6/v7/v8 全部 ✅；v8 待 tag v8.0.0）
 **配套文档**：每个阶段的 `vN/PHASE-N-PLAN.md`（启动时创建）；`vN/DESIGN-vN.md`（按需）
 **配套 release**：`vN/RELEASE-NOTES.md`（vN 完成时创建；v7 见 `v7/RELEASE-NOTES.md`）

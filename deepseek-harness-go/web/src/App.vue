@@ -2,18 +2,72 @@
 // App.vue — 顶层布局
 //
 // 顶部栏 + 侧边导航 + 主内容区；token 通过右侧表单输入。
+// 当 ?from=desktop 时（启动器嵌入场景），隐藏 token 输入框（已自动注入）
+// 并在底部显示状态条（启动器版本/工作区）。
 
-import { ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTokenStore } from '@/stores/token'
 import { client } from '@/api/client'
-import { MessageSquare, Package, Cpu, ListTodo, ShieldCheck, LogOut } from 'lucide-vue-next'
+import {
+  MessageSquare,
+  Package,
+  Cpu,
+  ListTodo,
+  ShieldCheck,
+  LogOut,
+  Monitor,
+} from 'lucide-vue-next'
 
 const router = useRouter()
 const tokenStore = useTokenStore()
 
 const tokenInput = ref(tokenStore.token)
 const healthState = ref<'unknown' | 'ok' | 'failed'>('unknown')
+
+// 启动器模式：通过 ?from=desktop 进入时启用
+const isDesktop = ref(false)
+const desktopInfo = ref<{ version?: string; pid?: string } | null>(null)
+
+const nav = [
+  { to: '/sessions', label: '会话', icon: MessageSquare },
+  { to: '/plugins', label: '插件', icon: Package },
+  { to: '/models', label: '模型', icon: Cpu },
+  { to: '/tasks', label: '任务', icon: ListTodo },
+  { to: '/approvals', label: '审批', icon: ShieldCheck },
+]
+
+onMounted(() => {
+  const params = new URLSearchParams(window.location.search)
+  isDesktop.value = params.get('from') === 'desktop'
+  // 桌面模式下从 URL 读取 token（启动器生成并注入）
+  const urlToken = params.get('token')
+  if (urlToken) {
+    tokenStore.setToken(urlToken)
+    // 清理 URL（避免 token 留在历史里）
+    params.delete('token')
+    const qs = params.toString()
+    const newUrl =
+      window.location.pathname + (qs ? '?' + qs : '') + window.location.hash
+    window.history.replaceState({}, '', newUrl)
+  }
+  // 若启动器没注入 token，尝试读 localStorage
+  if (!tokenStore.token) {
+    const stored = localStorage.getItem('dsh.console.token')
+    if (stored) tokenStore.setToken(stored)
+  }
+  if (tokenStore.token) pingHealth()
+  if (isDesktop.value) {
+    fetch('/api/v1/console/state?key=desktop', { headers: { Authorization: `Bearer ${tokenStore.token}` } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.value) {
+          try { desktopInfo.value = JSON.parse(d.value) } catch { /* ignore */ }
+        }
+      })
+      .catch(() => {})
+  }
+})
 
 async function saveToken() {
   tokenStore.setToken(tokenInput.value.trim())
@@ -36,13 +90,11 @@ function logout() {
   router.push('/sessions')
 }
 
-const nav = [
-  { to: '/sessions', label: '会话', icon: MessageSquare },
-  { to: '/plugins', label: '插件', icon: Package },
-  { to: '/models', label: '模型', icon: Cpu },
-  { to: '/tasks', label: '任务', icon: ListTodo },
-  { to: '/approvals', label: '审批', icon: ShieldCheck },
-]
+const connectionLabel = computed(() => {
+  if (healthState.value === 'ok') return '已连接'
+  if (healthState.value === 'failed') return '认证失败'
+  return '未连接'
+})
 </script>
 
 <template>
@@ -54,18 +106,25 @@ const nav = [
         <span class="version">v8.0.0-dev</span>
       </div>
       <div class="token-form">
-        <input
-          v-model="tokenInput"
-          type="text"
-          placeholder="Bearer token"
-          @keyup.enter="saveToken"
-        />
-        <button class="btn" @click="saveToken">连接</button>
-        <button v-if="tokenStore.token" class="btn" @click="logout" title="登出">
-          <LogOut :size="14" />
-        </button>
-        <span v-if="healthState === 'ok'" class="badge badge-loaded">已连接</span>
-        <span v-else-if="healthState === 'failed'" class="badge badge-failed">认证失败</span>
+        <template v-if="!isDesktop">
+          <input
+            v-model="tokenInput"
+            type="text"
+            placeholder="Bearer token"
+            @keyup.enter="saveToken"
+          />
+          <button class="btn" @click="saveToken">连接</button>
+          <button v-if="tokenStore.token" class="btn" @click="logout" title="登出">
+            <LogOut :size="14" />
+          </button>
+        </template>
+        <template v-else>
+          <Monitor :size="14" />
+          <span class="badge badge-loaded">桌面模式</span>
+          <span class="text-xs text-muted">自动连接本地 dsh</span>
+        </template>
+        <span v-if="healthState === 'ok'" class="badge badge-loaded">{{ connectionLabel }}</span>
+        <span v-else-if="healthState === 'failed'" class="badge badge-failed">{{ connectionLabel }}</span>
       </div>
     </header>
 
@@ -88,6 +147,12 @@ const nav = [
         <router-view />
       </main>
     </div>
+
+    <footer v-if="isDesktop" class="statusbar">
+      <span><Monitor :size="12" /> DeepSeek Harness Desktop v{{ desktopInfo?.version ?? '8.0.0' }}</span>
+      <span class="text-muted">pid={{ desktopInfo?.pid ?? '-' }}</span>
+      <span class="text-muted">{{ connectionLabel }}</span>
+    </footer>
   </div>
 </template>
 
@@ -187,5 +252,15 @@ const nav = [
   flex: 1;
   padding: 20px;
   overflow: auto;
+}
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 20px;
+  background: #1a202c;
+  color: rgba(255, 255, 255, 0.7);
+  border-top: 1px solid #2d3748;
+  font-size: 11px;
 }
 </style>
