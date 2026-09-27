@@ -26,6 +26,8 @@ P7-5 SDK           [P0]  sdk-go 模块（types / HTTP / JSON-RPC / echo demo）
 P7-1 Plugin install[P2]  installer 包（Scanner / StatusStore / Reconciler）
 P7-2 Node Bridge   [P1]  plugin/bridge/node 包（JSON-RPC over stdio）
 P7-3 MCP transport [P1]  mcp.HTTPTransport / SSETransport / ServerHandler
+                                  + server/mcp_bridge.go (MCPDispatcher 把 JSON-RPC
+                                  桥到 Gateway router)
 P7-4 ACP Server    [P0]  acp 包（session.create / send / cancel / permission）
 P7-6 AgentTeam A2A [P1]  a2a 包（Registry / Orchestrator）
 P7-7 LSP Tools     [P2]  lsp 包（hover / references / definition）

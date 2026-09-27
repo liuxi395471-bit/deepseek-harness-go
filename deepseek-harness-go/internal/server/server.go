@@ -25,9 +25,11 @@ import (
 	"strings"
 	"sync"
 
+	"deepseek-harness-go/internal/acp"
 	"deepseek-harness-go/internal/agent"
 	"deepseek-harness-go/internal/jobs"
 	"deepseek-harness-go/internal/llm"
+	"deepseek-harness-go/internal/mcp"
 	"deepseek-harness-go/internal/plugin"
 	"deepseek-harness-go/internal/store"
 	"deepseek-harness-go/internal/task"
@@ -55,6 +57,10 @@ type Server struct {
 	// 时初始化。允许 nil（兼容仅使用旧端点的 server）。
 	router *Router
 	gw     *GatewayHandlers
+
+	// v7 P7-3/4：可选的 ACP / MCP HTTP handler，nil 时路由 503。
+	acpServer    *acp.Server
+	mcpDispatch  func(ctx context.Context, req []byte) ([]byte, error) // JSON-RPC dispatcher for /mcp
 
 	// 每会话锁；防止对同一 id 并发调用 RunStream。
 	sessMu  sync.Mutex
@@ -124,6 +130,23 @@ func (s *Server) SetJobsRegistry(r *jobs.Registry) {
 	}
 }
 
+// SetACPServer 设置 ACP 服务端（v7 P7-4）。nil 表示不暴露 /acp/* 路由。
+func (s *Server) SetACPServer(srv *acp.Server) {
+	s.acpServer = srv
+}
+
+// SetMCPDispatcher 设置 MCP HTTP dispatcher（v7 P7-3）。
+//
+// dispatcher 接收完整 JSON-RPC 请求字节，返回 JSON-RPC 响应字节。
+// nil 表示不暴露 /mcp / /mcp/sse 路由。
+func (s *Server) SetMCPDispatcher(fn func(ctx context.Context, req []byte) ([]byte, error)) {
+	s.mcpDispatch = fn
+}
+
+// Router 返回当前 Gateway router（v7 用于 MCP HTTP 桥接）。
+// 调用方只读；不要修改返回的路由表。
+func (s *Server) Router() *Router { return s.router }
+
 // ErrConcurrentSession 在会话已被另一个请求占用时由 acquire 返回。
 var ErrConcurrentSession = errors.New("server: session in use")
 
@@ -147,15 +170,34 @@ func (s *Server) release(id string) {
 }
 
 // Handler 返回配置好的 HTTP handler。
+//
+// 路由分层：
+//   - /healthz / /api/*   → 需要 Bearer（v4 Gateway 鉴权）
+//   - /acp/* /mcp*        → 自带鉴权，绕过 Bearer（让外部 IDE / MCP
+//                           client 用各自协议）
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/api/gateway/stream", s.handleGatewayStream)
-	mux.HandleFunc("/api/agent/message", s.handleMessage)
-	mux.HandleFunc("/api/agent/stream", s.handleStream)
-	mux.HandleFunc("/api/sessions", s.handleListSessions)
-	mux.HandleFunc("/api/sessions/", s.handleSession)
-	return s.bearerAuth(mux)
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/healthz", s.handleHealth)
+	apiMux.HandleFunc("/api/gateway/stream", s.handleGatewayStream)
+	apiMux.HandleFunc("/api/agent/message", s.handleMessage)
+	apiMux.HandleFunc("/api/agent/stream", s.handleStream)
+	apiMux.HandleFunc("/api/sessions", s.handleListSessions)
+	apiMux.HandleFunc("/api/sessions/", s.handleSession)
+
+	apiHandler := s.bearerAuth(apiMux)
+
+	// 顶层 mux：先尝试 ACP/MCP，否则走 apiHandler
+	top := http.NewServeMux()
+	if s.acpServer != nil {
+		top.Handle("/acp/", s.acpServer.Handler())
+	}
+	if s.mcpDispatch != nil {
+		mcpH := mcp.NewSSEServerHandler(s.mcpDispatch)
+		top.Handle("/mcp", mcpH)
+		top.Handle("/mcp/sse", mcpH)
+	}
+	top.Handle("/", apiHandler)
+	return top
 }
 
 // handleGatewayStream 处理 POST /api/gateway/stream —— 统一 SSE 入口。

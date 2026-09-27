@@ -27,6 +27,11 @@
 | TC-v7-0023 | Intent | 9 类全覆盖 | 全部正确归类 |
 | TC-v7-0024 | Intent | Empty input | 兜底 chat |
 | TC-v7-0025 | Intent | First-hit wins | CodeFix 优先于 CodeRefactor |
+| TC-v7-0026 | Server-ACP | /acp/session/create 挂载 | 返回 session_id |
+| TC-v7-0027 | Server-ACP | Bearer 不阻 ACP（独立鉴权） | 200 |
+| TC-v7-0028 | Server-MCP | POST /mcp tools/list 桥接到 Gateway | 返回 tools 数组 |
+| TC-v7-0029 | Server-MCP | unknown method | JSON-RPC -32601 |
+| TC-v7-0030 | Router | DispatchSync | 同步收集事件 |
 
 ## 执行
 

@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"deepseek-harness-go/cmd/dsh/repl"
+	"deepseek-harness-go/internal/acp"
 	"deepseek-harness-go/internal/agent"
 	"deepseek-harness-go/internal/audit"
 	"deepseek-harness-go/internal/compaction"
@@ -537,6 +538,19 @@ func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, me
 	if jobsReg != nil {
 		srv.SetJobsRegistry(jobsReg)
 	}
+
+	// v7 P7-3: MCP HTTP dispatcher — 直接桥接 Gateway router 的
+	// tools.list / tools.call source，使 MCP 客户端可通过 HTTP 调用。
+	srv.SetMCPDispatcher(server.MCPDispatcher(srv.Router()))
+
+	// v7 P7-4: ACP 服务端 — 把 v6 Task 1:1 映射为 ACP session。
+	acpSrv := acp.NewServer(
+		acp.NewTaskExecutorAdapter(taskExec),
+		nil, // shared KV via v6 storage 留 v7.1
+		cfg.Server.AuthToken,
+	)
+	srv.SetACPServer(acpSrv)
+	log.Printf("[dsh] serve: ACP /acp/* + MCP /mcp exposed")
 	runner.Meter = meter
 
 	httpServer := &http.Server{

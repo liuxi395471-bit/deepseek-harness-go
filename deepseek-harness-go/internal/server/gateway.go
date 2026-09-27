@@ -84,6 +84,35 @@ func (r *Router) Dispatch(ctx context.Context, req GatewayRequest, out chan<- Ga
 	return h(ctx, req, out)
 }
 
+// DispatchSync 以 JSON-RPC 风格同步调用 handler：
+//   - 构造一个缓冲 channel；
+//   - 起 goroutine 跑 Dispatch；
+//   - 收齐 buffer 直到 handler 返回；
+//   - 把所有事件作为 result 数组返回；error 作为 JSON-RPC error.
+//
+// 用于 MCP HTTP / ACP / SDK 等"一次性"调用场景，避免 SSE。
+func (r *Router) DispatchSync(ctx context.Context, req GatewayRequest) ([]GatewayEvent, error) {
+	h, ok := r.sources[req.Source]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownSource, req.Source)
+	}
+	out := make(chan GatewayEvent, 32)
+	done := make(chan error, 1)
+	go func() {
+		done <- h(ctx, req, out)
+		close(out)
+	}()
+	var evs []GatewayEvent
+	for ev := range out {
+		evs = append(evs, ev)
+	}
+	if err := <-done; err != nil {
+		// 把 error 作为最后一条事件附带返回，方便 caller 转成 JSON-RPC error.
+		evs = append(evs, GatewayEvent{Source: req.Source, Type: "error", Payload: json.RawMessage(fmt.Sprintf(`{"err":%q}`, err.Error()))})
+	}
+	return evs, nil
+}
+
 // writeGatewayFrame 写出单个 GatewayEvent 到 w。flusher 用于立刻
 // flush SSE 缓冲。空 Payload 视为 null。
 func writeGatewayFrame(w io.Writer, flusher interface{ Flush() }, ev GatewayEvent) error {
