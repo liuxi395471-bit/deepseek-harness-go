@@ -120,7 +120,7 @@ ds-go 的**最终目标**：
 | **v5** | 安全与可观测基线（写租约 / Token 计量 / 渠道 / 凭据 / 审批矩阵 / Hook）| 5–7d | 🔴 必经 | ✅ 完成（tag v5.0.0） |
 | **v6** | 任务系统 + 工作流（Task / Workflow / Goal / Plan / Todo / Jobs / Terminal / Storage）| 5–6d | 🟡 必经 | ✅ 完成（tag v6.0.0） |
 | **v7** | 生态与协议互通（Node Bridge / MCP multi-transport / ACP / SDK / LSP / AgentTeam）| 6–8d | 🟢 选做 | ✅ 完成（tag v7.0.0） |
-| **v8** | Web Console + 产品化（Web UI / Desktop 选做 / Spill / Browser-Use）| 8–10d | 🟢 选做 | ☐ 待启动 |
+| **v8** | Web Console + Desktop（Vite+Vue 3 + Wails v2）| 8–10d | 🟢 选做 | 📝 设计完成（DESIGN-v8 v0.1）；☐ 待启动 |
 **v5 / v6 / v7 均已 ✅ 完成**；核心差距已全部覆盖。
 **完整对齐上游 ds-ts 主体能力预计还需 1–2 个版本**（v8 + 任意后续；剩余项均为可选）。
 
@@ -288,26 +288,32 @@ internal/
 
 ---
 
-### v8 — Web Console + 产品化
+### v8 — Web Console + Desktop
 
-**状态**：☐ 待启动
+**状态**：📝 设计完成（DESIGN-v8 v0.1 + PHASE-8-PLAN v0.1，2026-09-27）；☐ 待启动
 **主题**：把 ds-go 提升到"产品级"用户体验
 **工时**：8–10 天
 **优先级**：🟢 选做
-**依赖**：v7
+**依赖**：v7.0.0（tag `cc1dd87`）
+**用户决策**（2026-09-27）：
+- Web 控制台 = **Vite + Vue 3 SPA**（不上 Wails / 原生 JS / Go WASM）
+- 可选子项 = **核心 5 页 + Desktop 打包（Wails v2）**
+- 不做 Spill / Browser-Use / PTC-Runtime（留 v8.1）
 
-**目标**：原生 JS Web 控制台（参考 Java `dsh-java.xiaofuge.cn`），把模型设置 / 插件管理 / 会话列表 / 审批 / 任务队列都做出来。
+**目标**：原生 Web 控制台（参考 ds-ts `apps/web` 与 ds-java 控制台），把"会话 / 插件 / 模型 / 任务 / 审批"5 件事都在浏览器里完成；并提供 Wails 桌面打包。
 
 **子 TODO**：
-1. **P8-1 Web 控制台** — `web/` 目录，原生 JS（无构建工具）；5 个页面：会话列表 / 会话详情 / 插件管理 / 模型设置 / 任务队列。
-2. **P8-2 Spill / Browser-Use（可选）** — `internal/spill/` / `internal/browseruse/`；视需求决定是否做。
-3. **P8-3 v8 收尾** — `test-cases.md` 增到 200+；`RELEASE-v8.md`；Docker 镜像。
+1. **P8-1 后端 Console 域** — `internal/console/`：路由 + auth + 5 类 handler + SSE 转发 + `//go:embed` SPA；新增 1 张 `console_state` 表存 UI 偏好。
+2. **P8-2 前端 Vue 3 SPA** — `web/`：Vite + Vue 3 + Pinia + vue-query；5 个页面（会话 / 插件 / 模型 / 任务 / 审批）；主 chunk ≤ 300KB gzip。
+3. **P8-3 Desktop + 收尾** — `desktop/`：Wails v2 模板 + Tray；嵌入 ds-go 二进制；`docs/v8/{RELEASE-NOTES.md,TEST-CASES.md}`；tag `v8.0.0`。
 
 **验收**：
 - `TC-v8-0001` ~ `TC-v8-0008`（8 个新用例）通过；
-- Web 控制台 E2E（可选 Playwright）。
+- `curl http://127.0.0.1:7777/console/` 返回 200；
+- `wails build` 至少 Windows 平台成功；
+- 全部 v3/v4/v5/v6/v7 既有测试不回归。
 
-**详细计划**：`v8/PHASE-8-PLAN.md`（启动时创建）。
+**详细设计**：`v8/DESIGN-v8.md`（已完成）；**详细计划**：`v8/PHASE-8-PLAN.md`（已完成）。
 
 ---
 
@@ -331,7 +337,7 @@ internal/
 | R1 | v5 写租约可能影响性能 | 仅在 AppendEvent 时获取；30s TTL；提供 metric | v5 |
 | R2 | v6 工作流可能状态机爆炸 | 借鉴 Java `WorkflowService` + `WorkflowRun` | v6 |
 | R3 | v7 ACP 协议复杂度 | ✅ 已实现最小子集（HTTP 控制面 + permission/decide）；WebSocket 留 v7.1 | v7 |
-| R4 | v8 Web Console 工作量大 | 仅做"会话 + 插件 + 模型设置"3 页；其他留 TODO | v8 |
+| R4 | v8 Web Console 工作量大 | 已选"Vite+Vue SPA + Desktop"（不上原生 JS）；UI 组件复用 ds-ts 上游心智 | v8 |
 | R5 | SQLite 单写者限制 | 已用 WAL + busy_timeout；v5 写租约在 EventStore 层再加强 | v5 |
 | R6 | 上游 ds-ts 演进速度可能比 ds-go 快 | 每季度 diff 一次 ds-ts subsystems；评估对齐优先级 | 全周期 |
 
@@ -353,6 +359,6 @@ internal/
 
 ---
 
-**版本**：0-ROADMAP v0.6（2026-09-27：v5/v6/v7 全部标完成 ✅；v8 待启动）
+**版本**：0-ROADMAP v0.7（2026-09-27：v5/v6/v7 全部 ✅；v8 设计完成（DESIGN-v8 + PHASE-8-PLAN v0.1），待启动）
 **配套文档**：每个阶段的 `vN/PHASE-N-PLAN.md`（启动时创建）；`vN/DESIGN-vN.md`（按需）
 **配套 release**：`vN/RELEASE-NOTES.md`（vN 完成时创建；v7 见 `v7/RELEASE-NOTES.md`）
