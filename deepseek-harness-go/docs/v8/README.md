@@ -40,8 +40,8 @@ docs/v8/
 
 | # | 子项 | 工时 | 优先级 | 状态 |
 |---|---|---|---|---|
-| **P8-1** | 后端 Console 域 + REST API + embed.FS | 2.5d | 🔴 必经 | ☐ 待启动 |
-| **P8-2** | 前端 Vue 3 SPA（5 页 + 组件 + 状态管理） | 3d | 🔴 必经 | ☐ 待启动 |
+| **P8-1** | 后端 Console 域 + REST API + embed.FS | 2.5d | 🔴 必经 | ✅ 完成（commit 2ba5ff2） |
+| **P8-2** | 前端 Vue 3 SPA（5 页 + 组件 + 状态管理） | 3d | 🔴 必经 | ✅ 完成（web/dist 已 embed 到 internal/console/web_dist/） |
 | **P8-3** | Desktop（Wails v2）+ 收尾 + RELEASE | 2.5d | 🟡 必经 | ☐ 待启动 |
 
 > 详细规格见 `DESIGN-v8.md`；实施步骤见 `PHASE-8-PLAN.md`。
