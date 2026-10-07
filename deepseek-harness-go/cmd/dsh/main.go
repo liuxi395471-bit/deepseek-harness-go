@@ -827,7 +827,11 @@ func buildConsoleServer(
 		log.Printf("[dsh] console: state store unavailable: %v (continuing in-memory only)", err)
 		stateStore, _ = console.NewStateStore("")
 	}
-	return console.New(console.Config{AuthToken: cfg.Server.AuthToken}, console.Deps{
+	return console.New(console.Config{
+		AuthToken: cfg.Server.AuthToken,
+		// v8.1 P4: NoAuth 模式（DSH_CONSOLE_NO_AUTH=1 → 跳过全部账号登录）
+		NoAuth: os.Getenv("DSH_CONSOLE_NO_AUTH") == "1",
+	}, console.Deps{
 		Sessions:     sessions,
 		Plugins:      plugins,
 		Models:       models,

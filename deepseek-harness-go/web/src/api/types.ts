@@ -8,6 +8,10 @@ export interface SessionItem {
   updatedAt: string
   rounds: number
   preview: string
+  // v8.1 P3: workspace 是前端 localStorage 维护的元数据
+  // （dsh.console.sessionMeta[sid].workspace），驱动左栏分组；
+  // 后端不感知；create 后由前端补充填充。
+  workspace?: string
 }
 
 export interface SessionDetail extends SessionItem {
@@ -27,6 +31,9 @@ export interface SessionDetail extends SessionItem {
     promptTokens: number
     completionTokens: number
     totalTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    reasoningTokens?: number
   }
 }
 

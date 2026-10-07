@@ -22,7 +22,9 @@ export const locale = ref<Locale>(initial)
 
 const dict: Record<Locale, Record<string, string>> = {
   'zh-CN': {
-    'app.brand': 'DeepSeek Harness · 控制台',
+    'app.brand': 'DeepSeek Harness',
+    'app.section.workspace': '会话',
+    'app.section.system': '系统',
     'common.refresh': '刷新',
     'common.cancel': '取消',
     'common.delete': '删除',
@@ -150,7 +152,9 @@ const dict: Record<Locale, Record<string, string>> = {
     'error.network': '网络错误',
   },
   'en-US': {
-    'app.brand': 'DeepSeek Harness · Console',
+    'app.brand': 'DeepSeek Harness',
+    'app.section.workspace': 'WORKSPACE',
+    'app.section.system': 'SYSTEM',
     'common.refresh': 'Refresh',
     'common.cancel': 'Cancel',
     'common.delete': 'Delete',

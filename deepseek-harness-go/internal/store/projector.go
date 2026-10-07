@@ -22,6 +22,10 @@ import (
 type MessagesState []llm.Message
 
 // Apply 把事件转换为 llm.Message 追加到状态。
+//
+// v8.1：每条新追加的 message 自动填上 Seq（按当前长度 1, 2, 3...），
+// 这样前端 edit/delete 可以用 Seq 定位单条消息，而不必依赖外部
+// 索引。注意 Seq 是渲染位置，不一定是 store 内的事件 seq。
 func (p *MessagesProjector) Apply(ev Event, state ProjectionState) error {
 	msgs, ok := state.(*MessagesState)
 	if !ok {
@@ -36,18 +40,19 @@ func (p *MessagesProjector) Apply(ev Event, state ProjectionState) error {
 		if err := ev.UnmarshalPayload(&pl); err != nil {
 			return err
 		}
-		*msgs = append(*msgs, llm.Message{Role: llm.RoleSystem, Content: pl.Content})
+		*msgs = append(*msgs, llm.Message{Seq: int64(len(*msgs) + 1), Role: llm.RoleSystem, Content: pl.Content})
 	case EventUserMessage:
 		var pl UserMessagePayload
 		if err := ev.UnmarshalPayload(&pl); err != nil {
 			return err
 		}
-		*msgs = append(*msgs, llm.Message{Role: llm.RoleUser, Content: pl.Content})
+		*msgs = append(*msgs, llm.Message{Seq: int64(len(*msgs) + 1), Role: llm.RoleUser, Content: pl.Content})
 	case EventAssistantMessage:
 		var pl AssistantMessagePayload
 		if err := ev.UnmarshalPayload(&pl); err != nil {
 			return err
 		}
+		pl.Message.Seq = int64(len(*msgs) + 1)
 		*msgs = append(*msgs, pl.Message)
 	case EventToolCall:
 		var pl ToolCallPayload
@@ -55,6 +60,7 @@ func (p *MessagesProjector) Apply(ev Event, state ProjectionState) error {
 			return err
 		}
 		*msgs = append(*msgs, llm.Message{
+			Seq:  int64(len(*msgs) + 1),
 			Role: llm.RoleAssistant,
 			ToolCalls: []llm.ToolCall{{
 				ID:   pl.ID,
@@ -71,6 +77,7 @@ func (p *MessagesProjector) Apply(ev Event, state ProjectionState) error {
 			return err
 		}
 		*msgs = append(*msgs, llm.Message{
+			Seq:        int64(len(*msgs) + 1),
 			Role:       llm.RoleTool,
 			ToolCallID: pl.ID,
 			Name:       pl.Name,

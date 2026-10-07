@@ -80,9 +80,37 @@ func (a *SessionsAdapter) Get(ctx context.Context, sid string) (SessionDetail, e
 		},
 		Messages: msgsToAny(sess.Messages),
 	}
-	d.Usage.PromptTokens = sess.UsageTotal.PromptTokens
-	d.Usage.CompletionTokens = sess.UsageTotal.CompletionTokens
-	d.Usage.TotalTokens = sess.UsageTotal.TotalTokens
+	d.Usage = struct {
+		PromptTokens     int `json:"promptTokens"`
+		CompletionTokens int `json:"completionTokens"`
+		TotalTokens      int `json:"totalTokens"`
+		// v8.1: cache + reasoning 细分
+		CacheReadTokens     int     `json:"cacheReadTokens,omitempty"`
+		CacheWriteTokens    int     `json:"cacheWriteTokens,omitempty"`
+		ReasoningTokens     int     `json:"reasoningTokens,omitempty"`
+		CacheHitRate        float64 `json:"cacheHitRate,omitempty"`
+		UncachedInputTokens int     `json:"uncachedInputTokens,omitempty"`
+	}{
+		PromptTokens:        sess.UsageTotal.PromptTokens,
+		CompletionTokens:    sess.UsageTotal.CompletionTokens,
+		TotalTokens:         sess.UsageTotal.TotalTokens,
+		CacheReadTokens:     sess.UsageTotal.CacheReadTokens,
+		CacheWriteTokens:    sess.UsageTotal.CacheWriteTokens,
+		ReasoningTokens:     sess.UsageTotal.ReasoningTokens,
+		CacheHitRate:        sess.UsageTotal.CacheHitRate(),
+		UncachedInputTokens: sess.UsageTotal.UncachedInputTokens(),
+	}
+	// v8.1 P1：附加 ratings 给前端（dsh 风格 👍/👎）。
+	if a.Store != nil {
+		ratings, rerr := a.Store.ListMessageRatings(ctx, sid)
+		if rerr == nil && len(ratings) > 0 {
+			out := make(map[int64]int, len(ratings))
+			for k, v := range ratings {
+				out[k] = v.Rating
+			}
+			d.Ratings = out
+		}
+	}
 	return d, nil
 }
 
@@ -200,6 +228,156 @@ func (a *SessionsAdapter) EventsSince(ctx context.Context, sid string, since int
 	return out, last, nil
 }
 
+// SetMessageRating 把消息评分写入 Store。v8.1 P1：dsh 风格 good/bad。
+func (a *SessionsAdapter) SetMessageRating(ctx context.Context, sid string, msgSeq int64, rating int, comment string) error {
+	if a.Store == nil {
+		return ErrSessionMissing
+	}
+	if rating != -1 && rating != 0 && rating != 1 {
+		return fmt.Errorf("rating %d invalid (must be -1/0/1)", rating)
+	}
+	if err := a.Store.SetMessageRating(ctx, sid, msgSeq, rating, comment); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrSessionNotFound
+		}
+		if errors.Is(err, store.ErrMessageNotFound) {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+// ListMessageRatings 返回 sid 全部评分（前端 session detail 渲染 👍/👎）。
+func (a *SessionsAdapter) ListMessageRatings(ctx context.Context, sid string) (map[int64]int, error) {
+	if a.Store == nil {
+		return nil, ErrSessionMissing
+	}
+	all, err := a.Store.ListMessageRatings(ctx, sid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrSessionNotFound
+		}
+		return nil, err
+	}
+	out := make(map[int64]int, len(all))
+	for k, v := range all {
+		out[k] = v.Rating
+	}
+	return out, nil
+}
+
+// ExportMarkdown 把会话导出为 Markdown（dsh 风格导出）。
+// 格式：标题 + 每条消息角色 + 内容（多模态/工具调用以代码块呈现）。
+func (a *SessionsAdapter) ExportMarkdown(ctx context.Context, sid string) (string, error) {
+	if a.Store == nil {
+		return "", ErrSessionMissing
+	}
+	sess, err := a.Store.Load(ctx, sid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", ErrSessionNotFound
+		}
+		return "", err
+	}
+	var b strings.Builder
+	title := strings.TrimSpace(sess.Preview)
+	if title == "" {
+		title = sid
+	}
+	fmt.Fprintf(&b, "# %s\n\n", title)
+	fmt.Fprintf(&b, "_Exported at %s · sid=%s · rounds=%d_\n\n", time.Now().Format(time.RFC3339), sid, sess.Rounds)
+	fmt.Fprintf(&b, "**Usage**: prompt=%d · completion=%d · total=%d · cache=%d → cache_hit=%.0f%%\n\n",
+		sess.UsageTotal.PromptTokens, sess.UsageTotal.CompletionTokens, sess.UsageTotal.TotalTokens,
+		sess.UsageTotal.CacheReadTokens, sess.UsageTotal.CacheHitRate()*100)
+	b.WriteString("---\n\n")
+	for i, m := range sess.Messages {
+		fmt.Fprintf(&b, "## %d. %s\n", i+1, m.Role)
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			b.WriteString("\n**Tool calls:**\n```json\n")
+			for _, tc := range m.ToolCalls {
+				fmt.Fprintf(&b, "{\"id\":%q,\"name\":%q,\"arguments\":%s}\n",
+					tc.ID, tc.Function.Name, tc.Function.Arguments)
+			}
+			b.WriteString("```\n")
+		}
+		if strings.TrimSpace(m.Content) != "" {
+			fmt.Fprintf(&b, "\n%s\n\n", m.Content)
+		}
+	}
+	return b.String(), nil
+}
+
+// ExportJSONL 把会话导出为 JSONL（每行一条 message json）。
+func (a *SessionsAdapter) ExportJSONL(ctx context.Context, sid string) (string, error) {
+	if a.Store == nil {
+		return "", ErrSessionMissing
+	}
+	sess, err := a.Store.Load(ctx, sid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", ErrSessionNotFound
+		}
+		return "", err
+	}
+	var b strings.Builder
+	for i, m := range sess.Messages {
+		row := map[string]any{
+			"seq":     i + 1,
+			"role":    string(m.Role),
+			"content": m.Content,
+		}
+		if m.ToolCallID != "" {
+			row["tool_call_id"] = m.ToolCallID
+		}
+		if len(m.ToolCalls) > 0 {
+			row["tool_calls"] = m.ToolCalls
+		}
+		if m.Name != "" {
+			row["name"] = m.Name
+		}
+		bj, _ := json.Marshal(row)
+		b.Write(bj)
+		b.WriteByte('\n')
+	}
+	return b.String(), nil
+}
+
+// Regenerate 删除 seq=msgSeq user 之后的所有 assistant/tool 消息，
+// 并按 user 内容重新跑 SendStream。这是 dsh 原生 "regenerate" 的实现。
+//
+// seq 对齐：messages 的索引位置（与 messagesToAny 一致）。
+func (a *SessionsAdapter) Regenerate(ctx context.Context, sid string, msgSeq int64, out chan<- SessionFrame) error {
+	if a.Store == nil {
+		return ErrSessionMissing
+	}
+	if a.Runner == nil {
+		return errors.New("sessions adapter: runner nil")
+	}
+	sess, err := a.Store.Load(ctx, sid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrSessionNotFound
+		}
+		return err
+	}
+	if msgSeq < 0 || int(msgSeq) >= len(sess.Messages) {
+		return ErrMessageNotFound
+	}
+	if sess.Messages[msgSeq].Role != llm.RoleUser {
+		return ErrMessageNotEditable
+	}
+	// 截断：保留 0..msgSeq（含 user），把后续全删。
+	// 简单做法：逐条 DeleteMessage（与原 store 行为对齐——留空位）。
+	for i := int(msgSeq) + 1; i < len(sess.Messages); i++ {
+		if err := a.Store.DeleteMessage(ctx, sid, int64(i)); err != nil {
+			return fmt.Errorf("regenerate truncate: %w", err)
+		}
+	}
+	// 重新跑 user 消息的 SendStream。
+	return a.SendStream(ctx, sid, sess.Messages[msgSeq].Content, out)
+}
+
 // Send 同步阻塞版本（v8 控制台默认走 SendStream；Send 留作未来用）。
 func (a *SessionsAdapter) Send(ctx context.Context, sid, content string) (SendResult, error) {
 	if a.Runner == nil {
@@ -240,12 +418,24 @@ func (a *SessionsAdapter) SendStream(ctx context.Context, sid, content string, o
 	if res.Error != nil {
 		return res.Error
 	}
+	// 流式结束后把本轮 usage 写回 Store（让 detail.refetch() 能读到 token 用量）。
+	if a.Store != nil && res.SessionID != "" {
+		_ = a.Store.UpdateUsage(ctx, res.SessionID, res.Usage)
+	}
 	out <- SessionFrame{
 		Event: "loop_done",
 		Data: map[string]any{
-			"rounds":      res.Rounds,
-			"stopReason":  res.StopReason,
-			"sessionId":   res.SessionID,
+			"rounds":            res.Rounds,
+			"stopReason":        res.StopReason,
+			"sessionId":         res.SessionID,
+			"totalTokens":       res.Usage.TotalTokens,
+			"promptTokens":      res.Usage.PromptTokens,
+			"completionTokens":  res.Usage.CompletionTokens,
+			"cacheReadTokens":   res.Usage.CacheReadTokens,
+			"cacheWriteTokens":  res.Usage.CacheWriteTokens,
+			"reasoningTokens":   res.Usage.ReasoningTokens,
+			"uncachedInputTokens": res.Usage.UncachedInputTokens(),
+			"cacheHitRate":      res.Usage.CacheHitRate(),
 		},
 	}
 	return nil
@@ -298,6 +488,23 @@ func eventToFrame(ev agent.Event) SessionFrame {
 			Event: "loop_done",
 			Data:  map[string]any{"rounds": v.Rounds, "stopReason": "no_tool_calls"},
 		}
+	case agent.UsageUpdate:
+		// v8.1 P1：流式期间实时 usage；前端 composer status bar 可以跳。
+		u := v.Usage
+		return SessionFrame{
+			Event: "usage_update",
+			Data: map[string]any{
+				"round":              v.Round,
+				"promptTokens":       u.PromptTokens,
+				"completionTokens":   u.CompletionTokens,
+				"totalTokens":        u.TotalTokens,
+				"cacheReadTokens":    u.CacheReadTokens,
+				"cacheWriteTokens":   u.CacheWriteTokens,
+				"reasoningTokens":    u.ReasoningTokens,
+				"uncachedInputTokens": u.UncachedInputTokens(),
+				"cacheHitRate":       u.CacheHitRate(),
+			},
+		}
 	}
 	return SessionFrame{}
 }
@@ -312,10 +519,24 @@ func titleFromPreview(p string) string {
 	return p
 }
 
+// msgsToAny 把 store 中的 llm.Message 转成 []any 给 API 返回。
+//
+// v8.1 起：每条 message 都补上 Seq 字段（按位置递增 1, 2, 3...），
+// 这样前端的 edit/delete message 不必依赖 store 内部 seq，可以直接
+// 用"第 N 条消息"做定位。Message.Seq 字段本身也加上了，但旧 store
+// 写出的消息仍可能为 0，所以这里保险地再按位置写一次。
+//
+// 注意：Seq 是消息加载顺序的"渲染位置"——它与 store.EditMessage
+// 后端实际用的 seq 应当一致（AppendMessage 时 store 会同步分配）。
 func msgsToAny(msgs []llm.Message) []any {
 	out := make([]any, len(msgs))
 	for i, m := range msgs {
-		out[i] = m
+		// 复制一份到本地变量，避免修改 caller slice
+		cp := m
+		if cp.Seq == 0 {
+			cp.Seq = int64(i + 1)
+		}
+		out[i] = cp
 	}
 	return out
 }

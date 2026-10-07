@@ -32,25 +32,40 @@ const (
 )
 
 // ToolCallFunc 是 ToolCall 中的函数调用载荷。
+// ToolCallFunc 描述要调用的 function 工具。
 type ToolCallFunc struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"` // JSON 编码的字符串；原样保留
 }
 
 // ToolCall 是 assistant 发起的工具调用请求。
+//
+// Index 字段在流式响应里用于给 tool_call 一个稳定 key（部分
+// OpenAI-兼容实现如 DeepSeek 在前几个 delta 里不会发出 id，只
+// 给出 index）。重组器（internal/stream）应优先按 ID 合并，若
+// ID 为空则按 Index 合并，按 Name 合并作为最后兜底。
+//
+// Index 用 *int 区分"未设置"与"index=0"（OpenAI 协议下两者的语义
+// 不同：第一个 tool_call 必然有 index=0，未设置意味着 delta 没带
+// 任何 key 字段）。
 type ToolCall struct {
+	Index    *int         `json:"index,omitempty"`
 	ID       string       `json:"id"`
 	Type     string       `json:"type"` // "function"
 	Function ToolCallFunc `json:"function"`
 }
 
 // Message 是会话历史中的一条记录。
+//
+// Seq 仅在内部使用（v8.1 用于编辑/删除 API 的消息定位），不属于
+// OpenAI wire format；序列化时 json:"-" 屏蔽，避免污染 LLM 请求体。
 type Message struct {
-	Role       Role       `json:"role"`
-	Content    string     `json:"content,omitempty"`
+	Seq        int64     `json:"seq,omitempty"`
+	Role       Role      `json:"role"`
+	Content    string    `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"` // 仅 role=tool 时使用；对应 ToolCall.ID
-	Name       string     `json:"name,omitempty"`         // 可选，role=tool 时表示对应的工具
+	ToolCallID string    `json:"tool_call_id,omitempty"` // 仅 role=tool 时使用；对应 ToolCall.ID
+	Name       string    `json:"name,omitempty"`         // 可选，role=tool 时表示对应的工具
 }
 
 // ToolSpecFunc 向 LLM 描述一个可调用的函数。
@@ -78,10 +93,57 @@ type ChatRequest struct {
 }
 
 // Usage 是响应中可选返回的 token 用量统计。
+//
+// v8.1：拆出 cache 与 reasoning 字段，对齐 DeepSeek V4 报告
+// `usage.prompt_tokens_details.cached_tokens`（及旧版
+// `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`）。
+//
+// json tag 兼容两种字段命名：
+//   - `cache_read_tokens` / `cache_write_tokens`（dsh / DeepSeek V4 推荐）
+//   - `prompt_cache_hit_tokens`（DeepSeek V3 旧版，会自动归一为 CacheReadTokens）
+//
+// `reasoning_tokens` 直接对应 OpenAI o1 / DeepSeek-R1 的 output 子集。
+//
+// cache hit rate = CacheReadTokens / max(1, CacheReadTokens + UncachedInputTokens)
+//   其中 UncachedInputTokens = PromptTokens - CacheReadTokens - CacheWriteTokens
+// ReasoningTokens 是 CompletionTokens 的子集，永远不再计入 cache% 或 prompt%。
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+
+	// CacheReadTokens 是从 prefix cache 命中的 token 数（按折扣价计费）。
+	// 兼容 prompt_cache_hit_tokens（旧 DeepSeek V3）。
+	CacheReadTokens int `json:"cache_read_tokens,omitempty"`
+	// CacheWriteTokens 是本次请求写入 cache 的 token 数（首次计费）。
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	// ReasoningTokens 是 reasoning 模型的思考 token 数（Output 子集）。
+	// 兼容 reasoning_tokens（OpenAI o1 / DeepSeek-R1）。
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+}
+
+// CacheHitRate 返回缓存命中率（0~1）。billed input = cacheRead + cacheWrite + uncached。
+// uncached = prompt - cacheRead - cacheWrite（可能为 0 或负数时取 max(0)）。
+func (u Usage) CacheHitRate() float64 {
+	billed := u.CacheReadTokens + u.CacheWriteTokens + u.UncachedInputTokens()
+	if billed <= 0 {
+		return 0
+	}
+	return float64(u.CacheReadTokens) / float64(billed)
+}
+
+// UncachedInputTokens 返回真正"没走 cache"、按全价计费的输入 token 数。
+func (u Usage) UncachedInputTokens() int {
+	v := u.PromptTokens - u.CacheReadTokens - u.CacheWriteTokens
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+// BilledInputTokens 返回计费的输入 token 数（cache read + cache write + uncached）。
+func (u Usage) BilledInputTokens() int {
+	return u.CacheReadTokens + u.CacheWriteTokens + u.UncachedInputTokens()
 }
 
 // Choice 是 ChatResponse.Choices 中的一项（通常长度为 1）。
@@ -163,6 +225,9 @@ type SSEFrame struct {
 		Delta        SSEDelta `json:"delta"`
 		FinishReason string   `json:"finish_reason"`
 	} `json:"choices"`
+	// UsageRaw 保留原始 JSON，chunk 时再 normalize 成 Usage。
+	// 这样能识别嵌套结构（prompt_tokens_details.cached_tokens 等）。
+	UsageRaw json.RawMessage `json:"usage,omitempty"`
 }
 
 // SSEDelta 是每帧的增量载荷：部分文本和/或部分
@@ -175,8 +240,11 @@ type SSEDelta struct {
 
 // SSETool 是 OpenAI 的增量工具调用格式。Function.Arguments 是
 // JSON 的*片段*（通常是单个属性，甚至是不完整的字符串）。
+//
+// Index 字段在多数 OpenAI-兼容实现里稳定给出（0-based），是
+// "无 ID 时"的合并 key。这里用 *int 以区分"未提供"与"index=0"。
 type SSETool struct {
-	Index    int    `json:"index"`
+	Index    *int   `json:"index"`
 	ID       string `json:"id,omitempty"`
 	Type     string `json:"type,omitempty"`
 	Function struct {

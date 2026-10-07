@@ -151,6 +151,21 @@ func (s stubSessionBackend) DeleteMessage(_ ctx, _ string, _ int64) error {
 func (s stubSessionBackend) EventsSince(_ ctx, _ string, since int64) ([]SessionEvent, int64, error) {
 	return nil, since, nil
 }
+func (s stubSessionBackend) SetMessageRating(_ ctx, _ string, _ int64, _ int, _ string) error {
+	return nil
+}
+func (s stubSessionBackend) ListMessageRatings(_ ctx, _ string) (map[int64]int, error) {
+	return nil, nil
+}
+func (s stubSessionBackend) ExportMarkdown(_ ctx, _ string) (string, error) {
+	return "", nil
+}
+func (s stubSessionBackend) ExportJSONL(_ ctx, _ string) (string, error) {
+	return "", nil
+}
+func (s stubSessionBackend) Regenerate(_ ctx, _ string, _ int64, _ chan<- SessionFrame) error {
+	return nil
+}
 
 type ctx = context.Context
 

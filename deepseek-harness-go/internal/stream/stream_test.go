@@ -168,3 +168,153 @@ func TestRecombiner_AfterFinishedIsIdempotent(t *testing.T) {
 		t.Fatalf("want x got %q", got)
 	}
 }
+
+// DeepSeek-style: first delta only has Index=0 + name (no ID),
+// subsequent deltas carry arguments but no ID. 重组器应按 Index 合并。
+func TestRecombiner_ToolCallByIndex(t *testing.T) {
+	idx0 := 0
+	r := NewRecombiner()
+	// 第一个 delta：只有 index=0 和 name
+	r.Append(llm.StreamChunk{
+		ToolCalls: []llm.ToolCall{{
+			Index:    &idx0,
+			Type:     "function",
+			Function: llm.ToolCallFunc{Name: "shell"},
+		}},
+	})
+	// 第二个 delta：仍无 ID，带 arguments 片段
+	r.Append(llm.StreamChunk{
+		ToolCalls: []llm.ToolCall{{
+			Index:    &idx0,
+			Function: llm.ToolCallFunc{Arguments: `{"cmd":`},
+		}},
+	})
+	// 第三个 delta
+	r.Append(llm.StreamChunk{
+		ToolCalls: []llm.ToolCall{{
+			Index:    &idx0,
+			Function: llm.ToolCallFunc{Arguments: `"ls"}`},
+		}},
+		Finish: "tool_calls",
+	})
+
+	msg := r.Final()
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("want 1 tool call got %d", len(msg.ToolCalls))
+	}
+	tc := msg.ToolCalls[0]
+	if tc.Function.Name != "shell" {
+		t.Errorf("name = %q, want shell", tc.Function.Name)
+	}
+	if tc.Function.Arguments != `{"cmd":"ls"}` {
+		t.Errorf("args = %q, want {\"cmd\":\"ls\"}", tc.Function.Arguments)
+	}
+	if tc.ID == "" {
+		t.Errorf("id should be synthesized from index, got empty")
+	}
+}
+
+// 多个 tool_calls 并行时，recombiner 应按 Index 区分。
+func TestRecombiner_ToolCallsByIndexMultiple(t *testing.T) {
+	idx0, idx1 := 0, 1
+	r := NewRecombiner()
+	r.Append(llm.StreamChunk{
+		ToolCalls: []llm.ToolCall{
+			{Index: &idx0, Type: "function", Function: llm.ToolCallFunc{Name: "a"}},
+			{Index: &idx1, Type: "function", Function: llm.ToolCallFunc{Name: "b"}},
+		},
+	})
+	r.Append(llm.StreamChunk{
+		ToolCalls: []llm.ToolCall{
+			{Index: &idx0, Function: llm.ToolCallFunc{Arguments: `{"x":1}`}},
+			{Index: &idx1, Function: llm.ToolCallFunc{Arguments: `{"y":2}`}},
+		},
+		Finish: "tool_calls",
+	})
+	msg := r.Final()
+	if len(msg.ToolCalls) != 2 {
+		t.Fatalf("want 2 got %d", len(msg.ToolCalls))
+	}
+	// 顺序：先到先出
+	if msg.ToolCalls[0].Function.Name != "a" || msg.ToolCalls[0].Function.Arguments != `{"x":1}` {
+		t.Errorf("call[0] = %+v", msg.ToolCalls[0])
+	}
+	if msg.ToolCalls[1].Function.Name != "b" || msg.ToolCalls[1].Function.Arguments != `{"y":2}` {
+		t.Errorf("call[1] = %+v", msg.ToolCalls[1])
+	}
+}
+
+// 退化场景：arguments-only delta（无 ID/Index/Name）应被视为
+// "最后一条 tool_call 的续传"，避免创建 N 个空 tool_call。
+func TestRecombiner_ArgsOnlyDeltaAppendsToLast(t *testing.T) {
+	r := NewRecombiner()
+	r.Append(llm.StreamChunk{
+		ToolCalls: []llm.ToolCall{{
+			ID:   "call_1",
+			Type: "function",
+			Function: llm.ToolCallFunc{Name: "echo", Arguments: `{"x":`},
+		}},
+	})
+	// 后续 delta：仅 arguments（甚至被切成单字符也无 key）
+	r.Append(llm.StreamChunk{
+		ToolCalls: []llm.ToolCall{{
+			Function: llm.ToolCallFunc{Arguments: `1}`},
+		}},
+	})
+	r.Append(llm.StreamChunk{ToolCalls: []llm.ToolCall{{Function: llm.ToolCallFunc{Arguments: ""}}}, Finish: "tool_calls"})
+
+	msg := r.Final()
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("want 1 tool call got %d", len(msg.ToolCalls))
+	}
+	tc := msg.ToolCalls[0]
+	if tc.ID != "call_1" {
+		t.Errorf("id = %q, want call_1", tc.ID)
+	}
+	if tc.Function.Name != "echo" {
+		t.Errorf("name = %q, want echo", tc.Function.Name)
+	}
+	if tc.Function.Arguments != `{"x":1}` {
+		t.Errorf("args = %q, want {\"x\":1}", tc.Function.Arguments)
+	}
+}
+
+// DeepSeek-风格：LLM 把同一 tool_call 的"完整声明"和"args-only phantom"
+// 各自以相同 index 重复发出；重组器应把 args-only phantom 合并到已有
+// 的"name + id" entry 上，而不是创建 N 条空 entries。
+func TestRecombiner_DeepSeekSameIndexPhantom(t *testing.T) {
+	idx0 := 0
+	r := NewRecombiner()
+	// 第一帧：完整声明（含 id + name + 空 args）
+	r.Append(llm.StreamChunk{
+		ToolCalls: []llm.ToolCall{{
+			Index:    &idx0,
+			ID:       "call_00_xyz",
+			Type:     "function",
+			Function: llm.ToolCallFunc{Name: "terminal_run", Arguments: ""},
+		}},
+	})
+	// 第二帧：phantom（同 index，无 id，无 name，带 args）
+	r.Append(llm.StreamChunk{
+		ToolCalls: []llm.ToolCall{{
+			Index:    &idx0,
+			Function: llm.ToolCallFunc{Arguments: `{"command":"ls"}`},
+		}},
+	})
+	r.Append(llm.StreamChunk{ToolCalls: nil, Finish: "tool_calls"})
+
+	msg := r.Final()
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("want 1 tool call got %d: %+v", len(msg.ToolCalls), msg.ToolCalls)
+	}
+	tc := msg.ToolCalls[0]
+	if tc.ID != "call_00_xyz" {
+		t.Errorf("id = %q, want call_00_xyz", tc.ID)
+	}
+	if tc.Function.Name != "terminal_run" {
+		t.Errorf("name = %q, want terminal_run", tc.Function.Name)
+	}
+	if tc.Function.Arguments != `{"command":"ls"}` {
+		t.Errorf("args = %q, want {\"command\":\"ls\"}", tc.Function.Arguments)
+	}
+}

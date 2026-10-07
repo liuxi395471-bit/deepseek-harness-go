@@ -26,8 +26,9 @@ func (f Frame) Chunk(idx int) llm.StreamChunk {
 		if len(c.Delta.ToolCalls) > 0 {
 			for _, tc := range c.Delta.ToolCalls {
 				sc.ToolCalls = append(sc.ToolCalls, llm.ToolCall{
-					ID:   tc.ID,
-					Type: tc.Type,
+					Index: tc.Index,
+					ID:    tc.ID,
+					Type:  tc.Type,
 					Function: llm.ToolCallFunc{
 						Name:      tc.Function.Name,
 						Arguments: tc.Function.Arguments,
@@ -37,6 +38,13 @@ func (f Frame) Chunk(idx int) llm.StreamChunk {
 		}
 		if c.FinishReason != "" {
 			sc.Finish = c.FinishReason
+		}
+	}
+	// 顶级 usage 字段（OpenAI / DeepSeek 在终止帧中附带）
+	if len(f.parsed.UsageRaw) > 0 {
+		u := llm.ParseUsageBytes(f.parsed.UsageRaw)
+		if u.TotalTokens > 0 || u.PromptTokens > 0 {
+			sc.Usage = &u
 		}
 	}
 	return sc

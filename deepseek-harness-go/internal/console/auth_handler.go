@@ -226,6 +226,29 @@ type LoginResponse struct {
 
 // handleLogin 校验用户密码并签发 JWT。
 func (s *ConsoleServer) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// v8.1 P4: NoAuth 模式（DSH_CONSOLE_NO_AUTH=1）→ 任意 username/password
+	// 都返回 admin token；前端据此跳过 login。
+	if s.cfg.NoAuth {
+		username := "no-auth"
+		if s.Deps.Auth != nil {
+			if u, err := s.Deps.Auth.GetUser(r.Context(), "admin"); err == nil {
+				username = u.Username
+			}
+		}
+		exp := time.Now().Add(365 * 24 * time.Hour)
+		tok := "no-auth." + strconv.FormatInt(time.Now().Unix(), 36)
+		writeJSON(w, http.StatusOK, LoginResponse{
+			Token:     tok,
+			ExpiresAt: exp,
+			User: auth.User{
+				ID:        0,
+				Username:  username,
+				Role:      "admin",
+				CreatedAt: time.Now(),
+			},
+		})
+		return
+	}
 	if s.Deps.Auth == nil {
 		writeError(w, http.StatusServiceUnavailable, "auth backend not configured")
 		return
@@ -394,6 +417,18 @@ func (s *ConsoleServer) authedHandler(next http.Handler) http.Handler {
 		// /auth/login 永远 bypass（用密码换 token）
 		if path == "/auth/login" {
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		// v8.1 P4: NoAuth 模式直接放行（注入 admin 虚拟 user）
+		if s.cfg.NoAuth {
+			ctx := r.Context()
+			ctx = context.WithValue(ctx, ctxUserKey, auth.Claims{
+				Sub:  "no-auth",
+				Role: "admin",
+			})
+			ctx = context.WithValue(ctx, ctxAuthMethod, "no-auth")
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 

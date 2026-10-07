@@ -366,6 +366,24 @@ ds-ts 高级能力
 14d+
 真正"产品级"——目前 ds-go 单 token 就够用，不建议优先做
 
+
+
+cd D:\Devops\AgentProgram\deepseek-harness-all\deepseek-harness-go
+
+# 1. 准备配置（首次）
+Copy-Item harness.example.yml harness.yml -Force
+# 编辑 harness.yml 填 LLM base-url + api-key + server.auth-token
+
+# 2. 编译（首次或改 Go 代码后）
+go build -o dsh.exe ./cmd/dsh
+
+# 3. 构建 SPA dist（首次或改 web/src 后）
+Copy-Item -Recurse -Force web\dist\* internal\console\web_dist\
+go build -o dsh.exe ./cmd/dsh          # 必须再 build 让 embed.FS 重生成
+
+# 5. 启动
+.\dsh.exe -config harness.yml -serve
+
 ## §5 风险总表
 
 | # | 风险 | 应对 | 阶段 |

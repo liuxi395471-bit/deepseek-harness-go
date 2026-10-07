@@ -1,0 +1,1 @@
+function o(r){const e=r instanceof Date?r.getTime():Date.parse(String(r));if(isNaN(e))return String(r);const t=(Date.now()-e)/1e3;return t<60?"刚刚":t<3600?`${Math.floor(t/60)} 分钟前`:t<86400?`${Math.floor(t/3600)} 小时前`:`${Math.floor(t/86400)} 天前`}function a(r){return navigator.clipboard?.writeText(r)??Promise.resolve()}export{a as c,o as f};

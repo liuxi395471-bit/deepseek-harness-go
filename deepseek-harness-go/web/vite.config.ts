@@ -6,7 +6,12 @@ import { fileURLToPath, URL } from 'node:url'
 //
 // 构建产物输出到 dist/，被 internal/console/embed.go 通过 //go:embed
 // 注入；预算 gzip ≤ 300KB（见 docs/v8/DESIGN-v8.md §6）。
+//
+// base='/console/'：让所有构建产物（js/css/static/asset）的 url 带 /console/
+// 前缀，匹配 dsh 的 /console/* SPA 路由前缀。开发期仍可在根路径
+// 通过 vite proxy 转发到 /api/v1/console。
 export default defineConfig({
+  base: '/console/',
   plugins: [vue()],
   resolve: {
     alias: {

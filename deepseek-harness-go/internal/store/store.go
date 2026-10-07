@@ -92,6 +92,14 @@ type Store interface {
 	// 注意：seq 在 SQLite 中保留空位（不重排）；UI 应通过 Load 重读。
 	DeleteMessage(ctx context.Context, sid string, msgSeq int64) error
 
+	// SetMessageRating 设置 sid/msgSeq 的评分（+1 good / -1 bad / 0 clear）。
+	// 不存在 session 返回 ErrNotFound；msg 不存在返回 ErrMessageNotFound。
+	SetMessageRating(ctx context.Context, sid string, msgSeq int64, rating int, comment string) error
+
+	// ListMessageRatings 一次拉取 sid 全部评分（返回 msgSeq → rating + comment）。
+	// 无评分记录返回空 map（非错误）。
+	ListMessageRatings(ctx context.Context, sid string) (map[int64]MessageRating, error)
+
 	// Close 释放资源。可安全地多次调用。
 	Close() error
 }
@@ -102,6 +110,15 @@ var ErrMessageNotFound = errors.New("store: message not found")
 // ErrMessageNotEditable 在 EditMessage 试图改 role=assistant/tool 的
 // 消息时返回（避免破坏工具调用链；前端应在 UI 层禁用）。
 var ErrMessageNotEditable = errors.New("store: message role not editable")
+
+// MessageRating 是单条消息的评分记录（v8.1 P1）。
+//   - Rating: +1 点赞 / -1 点踩 / 0 清除
+//   - Comment: 可选评论（暂不强制长度）
+type MessageRating struct {
+	Seq     int64
+	Rating  int
+	Comment string
+}
 
 // EventStore 是 v4 §A 引入的事件溯源扩展接口。实现 AppendEvent/
 // ReadEvents/GetLastSeq 三个方法，向 AppendEvent 调用方提供完整的

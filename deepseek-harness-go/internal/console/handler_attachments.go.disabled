@@ -1,0 +1,447 @@
+package console
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"path"
+	"strings"
+	"time"
+
+	"deepseek-harness-go/internal/store"
+)
+
+// attachmentUploadLimit 是单次上传的硬上限（v8.1 P4，DESKTOP-FRONTEND
+// §4.3 隐含约束 — 浏览器端用 dsh 同样 25MB 上限）。
+const attachmentUploadLimit = 25 * 1024 * 1024
+
+// handleListAttachments 列出 session 下所有附件（v8.1 P4，DSH 原生 composer attachment rail）。
+//
+// 路由：GET /api/v1/console/sessions/{sid}/attachments
+func (s *ConsoleServer) handleListAttachments(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	sid := r.PathValue("sid")
+	if sid == "" {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "session id required")
+		return
+	}
+	as, ok := s.Deps.Store.(store.AttachmentStore)
+	if !ok {
+		writeErrorCode(w, http.StatusServiceUnavailable, CodeUnavailable, "attachment store not configured")
+		return
+	}
+	items, err := as.ListAttachments(r.Context(), sid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErrorCode(w, http.StatusNotFound, CodeSessionMissing, "session not found")
+			return
+		}
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+// handleUploadAttachment 上传一个文件到 session（v8.1 P4，DSH 原生 composer attachment rail）。
+//
+// 路由：POST /api/v1/console/sessions/{sid}/attachments
+// 请求体：multipart/form-data; field "file"
+// 上限：25MB
+// 存储：磁盘 .dsh/workspace/attachments/<sid>/<aid>.<ext>
+// 元数据：attachments 表（v8.1 P4）
+func (s *ConsoleServer) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	sid := r.PathValue("sid")
+	if sid == "" {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "session id required")
+		return
+	}
+	as, ok := s.Deps.Store.(store.AttachmentStore)
+	if !ok {
+		writeErrorCode(w, http.StatusServiceUnavailable, CodeUnavailable, "attachment store not configured")
+		return
+	}
+	// 验证 session 存在
+	if _, err := s.Deps.Sessions.Get(r.Context(), sid); err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			writeErrorCode(w, http.StatusNotFound, CodeSessionMissing, "session not found")
+			return
+		}
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, attachmentUploadLimit+4096)
+	if err := r.ParseMultipartForm(attachmentUploadLimit); err != nil {
+		writeErrorCode(w, http.StatusRequestEntityTooLarge, CodeBadRequest,
+			fmt.Sprintf("upload too large or invalid form (max %d bytes)", attachmentUploadLimit))
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "missing 'file' field")
+		return
+	}
+	defer file.Close()
+
+	// 生成 attachment id + 安全文件名
+	id, err := newAttachmentID()
+	if err != nil {
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	safeName := sanitizeFilename(header.Filename)
+	ext := strings.ToLower(filepath.Ext(safeName))
+	relPath := filepath.ToSlash(filepath.Join(sid, id+ext))
+	// 物理路径
+	root, err := s.attachmentRoot()
+	if err != nil {
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	absPath := filepath.Join(root, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	out, err := os.Create(absPath)
+	if err != nil {
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	written, err := io.Copy(out, file)
+	out.Close()
+	if err != nil {
+		_ = os.Remove(absPath)
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+
+	kind := "file"
+	mime := header.Header.Get("Content-Type")
+	if mime == "" {
+		mime = detectMimeFromExt(ext)
+	}
+	if isImageMime(mime) {
+		kind = "image"
+	}
+
+	att, err := as.CreateAttachment(r.Context(), store.Attachment{
+		ID:        id,
+		SessionID: sid,
+		Name:      safeName,
+		Mime:      mime,
+		Bytes:     written,
+		Kind:      kind,
+		RelPath:   relPath,
+		State:     "ready",
+		CreatedAt: time.Now(),
+	})
+	if err != nil {
+		_ = os.Remove(absPath)
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, att)
+}
+
+// handleDownloadAttachment 下载一个附件（v8.1 P4）。
+//
+// 路由：GET /api/v1/console/sessions/{sid}/attachments/{aid}
+func (s *ConsoleServer) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	sid := r.PathValue("sid")
+	aid := r.PathValue("aid")
+	if sid == "" || aid == "" {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "session id and attachment id required")
+		return
+	}
+	as, ok := s.Deps.Store.(store.AttachmentStore)
+	if !ok {
+		writeErrorCode(w, http.StatusServiceUnavailable, CodeUnavailable, "attachment store not configured")
+		return
+	}
+	att, err := as.GetAttachment(r.Context(), aid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErrorCode(w, http.StatusNotFound, CodeNotFound, "attachment not found")
+			return
+		}
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	if att.SessionID != sid {
+		// 不要泄漏 cross-session 信息
+		writeErrorCode(w, http.StatusNotFound, CodeNotFound, "attachment not found")
+		return
+	}
+	root, err := s.attachmentRoot()
+	if err != nil {
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	absPath := filepath.Join(root, filepath.FromSlash(att.RelPath))
+	// 安全检查：确保解出的路径在 root 内
+	cleanRoot, _ := filepath.Abs(root)
+	cleanPath, _ := filepath.Abs(absPath)
+	if !strings.HasPrefix(cleanPath, cleanRoot) {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "invalid path")
+		return
+	}
+	if _, err := os.Stat(absPath); err != nil {
+		writeErrorCode(w, http.StatusNotFound, CodeNotFound, "file missing on disk")
+		return
+	}
+	w.Header().Set("Content-Type", att.Mime)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", att.Bytes))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", att.Name))
+	http.ServeFile(w, r, absPath)
+}
+
+// handleDeleteAttachment 删除一个附件（v8.1 P4，DSH 原生 composer 移除）。
+//
+// 路由：DELETE /api/v1/console/sessions/{sid}/attachments/{aid}
+func (s *ConsoleServer) handleDeleteAttachment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	sid := r.PathValue("sid")
+	aid := r.PathValue("aid")
+	if sid == "" || aid == "" {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "session id and attachment id required")
+		return
+	}
+	as, ok := s.Deps.Store.(store.AttachmentStore)
+	if !ok {
+		writeErrorCode(w, http.StatusServiceUnavailable, CodeUnavailable, "attachment store not configured")
+		return
+	}
+	att, err := as.GetAttachment(r.Context(), aid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErrorCode(w, http.StatusNotFound, CodeNotFound, "attachment not found")
+			return
+		}
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	if att.SessionID != sid {
+		writeErrorCode(w, http.StatusNotFound, CodeNotFound, "attachment not found")
+		return
+	}
+	if err := as.DeleteAttachment(r.Context(), aid); err != nil {
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	// 磁盘文件删除（best-effort；失败不影响元数据删除）
+	if root, err := s.attachmentRoot(); err == nil {
+		_ = os.Remove(filepath.Join(root, filepath.FromSlash(att.RelPath)))
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListFiles 列出工作区根目录下的文件（v8.1 P4，DSH 原生 @ file reference 触发器）。
+//
+// 路由：GET /api/v1/console/files?path=.<sub>&depth=2
+// 返回：{"path": str, "entries": [{name, isDir, size, modified}]}
+//
+// path 必须位于 DSH_AGENT_WORKSPACE（默认 .dsh/workspace）之内；逃逸请求返回空。
+func (s *ConsoleServer) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	rel := r.URL.Query().Get("path")
+	if rel == "" {
+		rel = "."
+	}
+	depth := 1
+	if d := r.URL.Query().Get("depth"); d != "" {
+		var n int
+		_, _ = fmt.Sscanf(d, "%d", &n)
+		if n >= 1 && n <= 4 {
+			depth = n
+		}
+	}
+
+	root, err := s.attachmentRoot() // 用 .dsh/workspace 作为根
+	if err != nil {
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	// root 的父目录 = workspace
+	workspace := filepath.Dir(root)
+	absTarget, err := filepath.Abs(filepath.Join(workspace, rel))
+	if err != nil {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "invalid path")
+		return
+	}
+	absWorkspace, err := filepath.Abs(workspace)
+	if err != nil {
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	// 安全检查：target 必须在 workspace 内
+	if !strings.HasPrefix(absTarget, absWorkspace) && absTarget != absWorkspace {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "path outside workspace")
+		return
+	}
+
+	type entry struct {
+		Name     string `json:"name"`
+		Path     string `json:"path"`
+		IsDir    bool   `json:"isDir"`
+		Size     int64  `json:"size"`
+		Modified string `json:"modified"`
+	}
+	var entries []entry
+	var walk func(p string, d int)
+	walk = func(p string, d int) {
+		if d > depth {
+			return
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return
+		}
+		infos, err := f.Readdir(0)
+		f.Close()
+		if err != nil {
+			return
+		}
+		for _, info := range infos {
+			// 跳过常见大型目录
+			name := info.Name()
+			if info.IsDir() {
+				if name == "node_modules" || name == ".git" || name == "dist" || name == "build" || name == "target" || name == "vendor" {
+					continue
+				}
+			} else {
+				if strings.HasPrefix(name, ".") && name != ".env" && name != ".gitignore" {
+					continue
+				}
+			}
+			relPath, _ := filepath.Rel(absWorkspace, filepath.Join(p, name))
+			relPath = filepath.ToSlash(relPath)
+			entries = append(entries, entry{
+				Name:     name,
+				Path:     relPath,
+				IsDir:    info.IsDir(),
+				Size:     info.Size(),
+				Modified: info.ModTime().UTC().Format(time.RFC3339),
+			})
+			if info.IsDir() && d < depth {
+				walk(filepath.Join(p, name), d+1)
+			}
+		}
+	}
+	walk(absTarget, 0)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":    rel,
+		"entries": entries,
+		"count":   len(entries),
+	})
+}
+
+// attachmentRoot 返回 .dsh/workspace/attachments 绝对路径。
+func (s *ConsoleServer) attachmentRoot() (string, error) {
+	root := filepath.Join(s.attachmentWorkspace, "attachments")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+// newAttachmentID 生成 8 字节随机 hex（16 字符）的 attachment id。
+func newAttachmentID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// sanitizeFilename 移除路径分隔符与不可显字符。
+func sanitizeFilename(name string) string {
+	name = filepath.Base(name)
+	if name == "" || name == "." || name == ".." {
+		return "untitled"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		if r < 32 || r == 127 || r == '/' || r == '\\' || r == ':' || r == '*' || r == '?' || r == '"' || r == '<' || r == '>' || r == '|' {
+			b.WriteRune('_')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return "untitled"
+	}
+	return out
+}
+
+// detectMimeFromExt 通过扩展名猜 mime（最常用类型）。
+func detectMimeFromExt(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".txt", ".md", ".log":
+		return "text/plain"
+	case ".json":
+		return "application/json"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".svg":
+		return "image/svg+xml"
+	case ".pdf":
+		return "application/pdf"
+	case ".html", ".htm":
+		return "text/html"
+	case ".css":
+		return "text/css"
+	case ".js":
+		return "application/javascript"
+	case ".ts":
+		return "application/typescript"
+	case ".py":
+		return "text/x-python"
+	case ".go":
+		return "text/x-go"
+	case ".yaml", ".yml":
+		return "application/yaml"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// isImageMime 判断是否为图片。
+func isImageMime(m string) bool {
+	return strings.HasPrefix(m, "image/")
+}
+
+// 防止未使用的 import（json 在 json.RawMessage 路径间接使用；保留 import）
+var _ = json.RawMessage{}
+var _ = path.Clean

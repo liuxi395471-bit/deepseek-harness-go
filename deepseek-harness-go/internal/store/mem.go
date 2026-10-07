@@ -25,19 +25,18 @@ type MapStore struct {
 }
 
 type mapSession struct {
-	id         string
-	createdAt  time.Time
-	updatedAt  time.Time
-	rounds     int
-	preview    string
-	messages   []llm.Message
-	usageTotal llm.Usage
-	// v4 §A：events 流。每条事件按 seq 单调递增写入。
-	events []Event
-	// lastSeq 是 events 流的最后分配 seq（-1 表示无事件）。
-	lastSeq int64
-	// projectCache 是 session 内的 ProjectionCache 视图。
+	id           string
+	createdAt    time.Time
+	updatedAt    time.Time
+	rounds       int
+	preview      string
+	messages     []llm.Message
+	usageTotal   llm.Usage
+	events       []Event
+	lastSeq      int64
 	projectCache *MemoryProjectionCache
+	// ratings 是 v8.1 P1 引入的 msgSeq → 评分 映射。
+	ratings map[int64]MessageRating
 }
 
 // NewMapStore 构造一个空的内存存储。
@@ -253,7 +252,7 @@ func (s *MapStore) List(ctx context.Context, limit, offset int) ([]Session, erro
 	return out, nil
 }
 
-// UpdateUsage 将 delta 加到 UsageTotal。
+// UpdateUsage 将 delta 加到 UsageTotal（v8.1 含 cache / reasoning 细分）。
 func (s *MapStore) UpdateUsage(ctx context.Context, id string, delta llm.Usage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -267,6 +266,9 @@ func (s *MapStore) UpdateUsage(ctx context.Context, id string, delta llm.Usage) 
 	sess.usageTotal.PromptTokens += delta.PromptTokens
 	sess.usageTotal.CompletionTokens += delta.CompletionTokens
 	sess.usageTotal.TotalTokens += delta.TotalTokens
+	sess.usageTotal.CacheReadTokens += delta.CacheReadTokens
+	sess.usageTotal.CacheWriteTokens += delta.CacheWriteTokens
+	sess.usageTotal.ReasoningTokens += delta.ReasoningTokens
 	sess.updatedAt = time.Now()
 	return nil
 }
@@ -327,6 +329,52 @@ func (s *MapStore) DeleteMessage(ctx context.Context, sid string, msgSeq int64) 
 	sess.messages[msgSeq] = llm.Message{Role: llm.RoleSystem, Content: ""}
 	sess.updatedAt = time.Now()
 	return nil
+}
+
+// SetMessageRating 设置内存版评分（rating=0 时清除）。
+func (s *MapStore) SetMessageRating(ctx context.Context, sid string, msgSeq int64, rating int, comment string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("store: closed")
+	}
+	sess, ok := s.sessions[sid]
+	if !ok {
+		return ErrNotFound
+	}
+	if msgSeq < 0 || int(msgSeq) >= len(sess.messages) {
+		return ErrMessageNotFound
+	}
+	if rating == 0 {
+		delete(sess.ratings, msgSeq)
+		return nil
+	}
+	if rating != 1 && rating != -1 {
+		return fmt.Errorf("store: invalid rating %d", rating)
+	}
+	if sess.ratings == nil {
+		sess.ratings = make(map[int64]MessageRating)
+	}
+	sess.ratings[msgSeq] = MessageRating{Seq: msgSeq, Rating: rating, Comment: comment}
+	return nil
+}
+
+// ListMessageRatings 返回 sid 全部评分。
+func (s *MapStore) ListMessageRatings(ctx context.Context, sid string) (map[int64]MessageRating, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, errors.New("store: closed")
+	}
+	sess, ok := s.sessions[sid]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	out := make(map[int64]MessageRating, len(sess.ratings))
+	for k, v := range sess.ratings {
+		out[k] = v
+	}
+	return out, nil
 }
 
 // Close 将存储标记为已关闭。后续操作返回错误。

@@ -733,6 +733,12 @@ func (*storeStub) UpdateUsage(context.Context, string, llm.Usage) error { return
 func (*storeStub) DeleteSession(context.Context, string) error { return nil }
 func (*storeStub) EditMessage(context.Context, string, int64, string) error { return nil }
 func (*storeStub) DeleteMessage(context.Context, string, int64) error { return nil }
+func (*storeStub) SetMessageRating(context.Context, string, int64, int, string) error {
+	return nil
+}
+func (*storeStub) ListMessageRatings(context.Context, string) (map[int64]MessageRating, error) {
+	return nil, nil
+}
 func (*storeStub) Close() error { return nil }
 
 // T1.8.18 MapStore.Begin 在 closed 后 AppendEvent 返回错误

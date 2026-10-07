@@ -1,0 +1,9 @@
+2026/10/07 21:38:44 [dsh] channels: [default]
+2026/10/07 21:38:44 [dsh] channel "default" → model=deepseek-flash
+2026/10/07 21:38:44 [dsh] storage: active at .dsh\workspace\storage
+2026/10/07 21:38:44 [dsh] jobs: registry active (in-memory, 1000-line buffer)
+2026/10/07 21:38:44 [dsh] store: sqlite .dsh\workspace\dsh.db
+2026/10/07 21:38:44 [dsh] task store: sqlite .dsh\workspace\tasks.db
+2026/10/07 21:38:44 [dsh] serve: ACP /acp/* + MCP /mcp exposed
+2026/10/07 21:38:44 [dsh] serve: Web Console at http://127.0.0.1:8765/console/  (auth=JWT, ttl=24h, users=.dsh\workspace\users.db)
+2026/10/07 21:38:44 [dsh] serve: listening on 127.0.0.1:8765 (model=deepseek-flash)

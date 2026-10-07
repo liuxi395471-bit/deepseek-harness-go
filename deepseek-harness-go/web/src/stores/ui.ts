@@ -26,7 +26,7 @@ function loadTheme(): Theme {
   } catch {
     /* ignore */
   }
-  return 'light'
+  return 'dark' // 桌面端默认深色
 }
 
 function applyTheme(theme: Theme) {

@@ -25,7 +25,15 @@ type SessionDetail struct {
 		PromptTokens     int `json:"promptTokens"`
 		CompletionTokens int `json:"completionTokens"`
 		TotalTokens      int `json:"totalTokens"`
+		// v8.1: cache + reasoning 细分
+		CacheReadTokens     int     `json:"cacheReadTokens,omitempty"`
+		CacheWriteTokens    int     `json:"cacheWriteTokens,omitempty"`
+		ReasoningTokens     int     `json:"reasoningTokens,omitempty"`
+		CacheHitRate        float64 `json:"cacheHitRate,omitempty"`
+		UncachedInputTokens int     `json:"uncachedInputTokens,omitempty"`
 	} `json:"usage"`
+	// Ratings 是 v8.1 P1 引入的 msgSeq → rating 映射（+1 good / -1 bad）。
+	Ratings map[int64]int `json:"ratings,omitempty"`
 }
 
 // SendResult 是发送消息的同步返回（仅当 source 一次性返回时使用）。
@@ -61,6 +69,22 @@ type SessionBackend interface {
 	// EventsSince 返回 sid 中 seq > since 的 events（升序）；未实现时返回
 	// nil, nil（callers 应 fall back to SSE）。v8.1 Spill 续传接口。
 	EventsSince(ctx context.Context, sid string, since int64) (events []SessionEvent, lastSeq int64, err error)
+
+	// SetMessageRating 评分（+1 good / -1 bad / 0 clear）；v8.1 P1。
+	SetMessageRating(ctx context.Context, sid string, msgSeq int64, rating int, comment string) error
+
+	// ListMessageRatings 返回 sid 全部评分（seq → rating）。
+	ListMessageRatings(ctx context.Context, sid string) (map[int64]int, error)
+
+	// ExportMarkdown 把 sid 的对话导出为 Markdown。
+	ExportMarkdown(ctx context.Context, sid string) (string, error)
+
+	// ExportJSONL 导出为 JSONL（每行一个 message json）。
+	ExportJSONL(ctx context.Context, sid string) (string, error)
+
+	// Regenerate 重生成 sid 中 seq=msgSeq 的 user 消息对应的 assistant 回复。
+	// 流程：删除从 msgSeq 起所有 assistant/tool 消息，然后按 user 消息内容重新跑 Send。
+	Regenerate(ctx context.Context, sid string, msgSeq int64, out chan<- SessionFrame) error
 }
 
 // SessionEvent 是 EventsSince 返回的单条事件（投影自 store.Event）。

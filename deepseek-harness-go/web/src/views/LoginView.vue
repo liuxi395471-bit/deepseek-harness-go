@@ -1,12 +1,9 @@
 <script setup lang="ts">
-// LoginView — v8.1 JWT 登录页
-//
-// 表单：用户名 + 密码。提交时调 /auth/login；成功后写入 userStore，
-// 跳到原目标 / 默认 /sessions。
+// LoginView — 登录页（dsh 桌面端风格）
 
 import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { LogIn, AlertCircle } from 'lucide-vue-next'
+import { LogIn, AlertCircle, Zap } from 'lucide-vue-next'
 import { login } from '@/api/auth'
 import { useI18n } from '@/i18n'
 
@@ -42,10 +39,12 @@ async function onSubmit() {
   <div class="login-page">
     <div class="login-card">
       <div class="brand">
-        <span class="logo">⚡</span>
-        <h1>{{ t('app.brand') }}</h1>
+        <span class="brand-mark"><Zap :size="20" /></span>
+        <div class="brand-text">
+          <h1>{{ t('app.brand') }}</h1>
+          <p class="hint">{{ t('login.hint') }}</p>
+        </div>
       </div>
-      <p class="hint">{{ t('login.hint') }}</p>
       <form @submit.prevent="onSubmit">
         <label class="field">
           <span>{{ t('login.username') }}</span>
@@ -69,11 +68,11 @@ async function onSubmit() {
           />
         </label>
         <div v-if="errorMsg" class="error">
-          <AlertCircle :size="14" />
+          <AlertCircle :size="13" />
           <span>{{ errorMsg }}</span>
         </div>
-        <button type="submit" class="btn btn-primary" :disabled="submitting">
-          <LogIn :size="14" />
+        <button type="submit" class="btn btn-primary submit-btn" :disabled="submitting">
+          <LogIn :size="13" />
           <span>{{ submitting ? t('login.submitting') : t('login.submit') }}</span>
         </button>
       </form>
@@ -88,69 +87,83 @@ async function onSubmit() {
   justify-content: center;
   min-height: 100vh;
   background: var(--bg);
+  padding: 20px;
 }
 .login-card {
   width: 360px;
-  padding: 28px;
+  padding: 22px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-lg);
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
+  gap: 12px;
+  margin-bottom: 16px;
 }
-.brand .logo {
-  font-size: 26px;
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  color: #fff;
+  flex-shrink: 0;
 }
-.brand h1 {
-  font-size: 16px;
+.brand-text { flex: 1; }
+.brand-text h1 {
+  font-size: 14px;
   margin: 0;
   color: var(--text);
+  font-weight: 600;
 }
 .hint {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 18px;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin: 2px 0 0;
 }
 .field {
   display: block;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 .field span {
   display: block;
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: 11px;
+  color: var(--text-faint);
   margin-bottom: 4px;
+  font-weight: 500;
 }
 .field input {
   width: 100%;
-  padding: 8px 10px;
-  background: var(--bg);
+  padding: 7px 10px;
+  background: var(--bg-elevated);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 14px;
+  border-radius: var(--ds-radius-sm);
+  font-size: 13px;
   outline: none;
 }
 .field input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 .error {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--danger);
-  background: var(--danger-bg, #fef2f2);
+  background: var(--danger-bg);
   padding: 6px 8px;
-  border-radius: 4px;
-  margin-bottom: 12px;
+  border-radius: var(--ds-radius-sm);
+  margin-bottom: 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 }
-.btn {
+.submit-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -158,23 +171,15 @@ async function onSubmit() {
   width: 100%;
   padding: 8px 14px;
   font-size: 13px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  cursor: pointer;
-  transition: background 0.1s;
-}
-.btn-primary {
+  font-weight: 600;
+  border-radius: var(--ds-radius-sm);
+  border: 1px solid var(--accent);
   background: var(--accent);
   color: #fff;
-  border-color: var(--accent);
+  cursor: pointer;
+  margin-top: 4px;
+  transition: background var(--ds-duration-fast) var(--ds-ease-in-out);
 }
-.btn:hover:not(:disabled) {
-  opacity: 0.9;
-}
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.submit-btn:hover:not(:disabled) { background: var(--accent-hover); }
+.submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

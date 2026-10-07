@@ -16,6 +16,8 @@ func (s *ConsoleServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"ok":      true,
 		"version": s.version,
 		"module":  "console",
+		// v8.1 P4: 暴露 no-auth 标志给前端；前端据此跳过 login
+		"noAuth":  s.cfg.NoAuth,
 	})
 }
 
@@ -205,4 +207,166 @@ func writeSessionFrame(w http.ResponseWriter, flusher http.Flusher, frame Sessio
 	_, _ = w.Write(b)
 	_, _ = w.Write([]byte("\n\n"))
 	flusher.Flush()
+}
+
+// handleMessageFeedback 处理 POST /sessions/{sid}/messages/{seq}/feedback
+//
+// 请求体：{"rating": -1|0|1, "comment": "..."}
+//   - rating: +1 (good) / -1 (bad) / 0 (clear)
+//   - 0 时 comment 会被丢弃（清除评分）
+func (s *ConsoleServer) handleMessageFeedback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Deps.Sessions == nil {
+		writeErrorCode(w, http.StatusServiceUnavailable, CodeUnavailable, "sessions backend not configured")
+		return
+	}
+	sid := r.PathValue("sid")
+	seqStr := r.PathValue("seq")
+	if sid == "" || seqStr == "" {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "sid and seq required")
+		return
+	}
+	seq, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil || seq < 0 {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "invalid seq")
+		return
+	}
+	var req struct {
+		Rating  int    `json:"rating"`
+		Comment string `json:"comment"`
+	}
+	if !readJSON(r, &req) {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "invalid json body")
+		return
+	}
+	if err := s.Deps.Sessions.SetMessageRating(r.Context(), sid, seq, req.Rating, req.Comment); err != nil {
+		switch {
+		case errors.Is(err, ErrSessionNotFound):
+			writeErrorCode(w, http.StatusNotFound, CodeSessionMissing, err.Error())
+		case errors.Is(err, ErrMessageNotFound):
+			writeErrorCode(w, http.StatusNotFound, CodeNotFound, err.Error())
+		default:
+			writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "seq": seq, "rating": req.Rating})
+}
+
+// handleMessageRegenerate 处理 POST /sessions/{sid}/messages/{seq}/regenerate
+//
+// 把 seq 的 user 消息之后的 assistant/tool 消息全部删除并重新跑。
+// 响应：SSE stream（与 POST /messages 共享事件格式）。
+func (s *ConsoleServer) handleMessageRegenerate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Deps.Sessions == nil {
+		writeErrorCode(w, http.StatusServiceUnavailable, CodeUnavailable, "sessions backend not configured")
+		return
+	}
+	sid := r.PathValue("sid")
+	seqStr := r.PathValue("seq")
+	if sid == "" || seqStr == "" {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "sid and seq required")
+		return
+	}
+	seq, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil || seq < 0 {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "invalid seq")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErrorCode(w, http.StatusInternalServerError, CodeInternal, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	out := make(chan SessionFrame, 64)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Deps.Sessions.Regenerate(r.Context(), sid, seq, out)
+		close(out)
+	}()
+	for frame := range out {
+		writeSessionFrame(w, flusher, frame)
+	}
+	if err := <-errCh; err != nil {
+		writeSessionFrame(w, flusher, SessionFrame{
+			Event: "loop_error",
+			Data:  map[string]any{"err": err.Error()},
+		})
+	}
+}
+
+// handleSessionExport 处理 GET /sessions/{sid}/export?format=md|jsonl
+//
+// 响应：
+//   - format=md    → text/markdown
+//   - format=jsonl → application/x-ndjson
+func (s *ConsoleServer) handleSessionExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Deps.Sessions == nil {
+		writeErrorCode(w, http.StatusServiceUnavailable, CodeUnavailable, "sessions backend not configured")
+		return
+	}
+	sid := r.PathValue("sid")
+	if sid == "" {
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "sid required")
+		return
+	}
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "md"
+	}
+	ctx := r.Context()
+	var (
+		body  string
+		ctype string
+	)
+	switch format {
+	case "md", "markdown":
+		s, err := s.Deps.Sessions.ExportMarkdown(ctx, sid)
+		if err != nil {
+			if errors.Is(err, ErrSessionNotFound) {
+				writeErrorCode(w, http.StatusNotFound, CodeSessionMissing, err.Error())
+			} else {
+				writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+			}
+			return
+		}
+		body = s
+		ctype = "text/markdown; charset=utf-8"
+	case "jsonl":
+		s, err := s.Deps.Sessions.ExportJSONL(ctx, sid)
+		if err != nil {
+			if errors.Is(err, ErrSessionNotFound) {
+				writeErrorCode(w, http.StatusNotFound, CodeSessionMissing, err.Error())
+			} else {
+				writeErrorCode(w, http.StatusInternalServerError, CodeInternal, err.Error())
+			}
+			return
+		}
+		body = s
+		ctype = "application/x-ndjson; charset=utf-8"
+	default:
+		writeErrorCode(w, http.StatusBadRequest, CodeBadRequest, "format must be md or jsonl")
+		return
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+sid+"."+format+`"`)
+	_, _ = w.Write([]byte(body))
 }

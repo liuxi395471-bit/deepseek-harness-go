@@ -41,6 +41,13 @@ type Config struct {
 
 	// TokenTTL 控制签发 JWT 的默认有效期；空时使用 24h。
 	TokenTTL time.Duration
+
+	// v8.1 P4: NoAuth 跳过全部鉴权（DSH_CONSOLE_NO_AUTH=1）。
+	// 启用后：
+	//   - /auth/* 返回 stub（success + 假 admin token）
+	//   - authedHandler 直接放行（注入 admin 虚拟 user）
+	//   - 用于本地开发 / 临时演示；**生产请勿启用**
+	NoAuth bool
 }
 
 // ConsoleServer 把 Console HTTP handler 聚合起来。Handler() 返回一个
@@ -150,6 +157,10 @@ func (s *ConsoleServer) Handler() http.Handler {
 	api.HandleFunc("POST /sessions/{sid}/messages", s.handlePostMessage)
 	api.HandleFunc("PATCH /sessions/{sid}/messages/{seq}", s.handleEditMessage)
 	api.HandleFunc("DELETE /sessions/{sid}/messages/{seq}", s.handleDeleteMessage)
+	// v8.1 P1：feedback、regenerate、export。
+	api.HandleFunc("POST /sessions/{sid}/messages/{seq}/feedback", s.handleMessageFeedback)
+	api.HandleFunc("POST /sessions/{sid}/messages/{seq}/regenerate", s.handleMessageRegenerate)
+	api.HandleFunc("GET /sessions/{sid}/export", s.handleSessionExport)
 	// v8.1 Spill：events 续传（since=seq 起点）
 	api.HandleFunc("GET /sessions/{sid}/events", s.handleSessionEvents)
 
@@ -203,10 +214,30 @@ func (s *ConsoleServer) Handler() http.Handler {
 	top := http.NewServeMux()
 	// 把 trailing-slash 注册到 stripped 上，让 mux 把 /x/ 也路由到 /x
 	top.Handle("/api/v1/console/", trailingSlashStripper{stripped})
-	top.Handle("/api/v1/console", trailingSlashStripper{stripped})
+	// v8.1 P3: go 1.22+ ServeMux 对 path 没 trailing slash 且有 prefix
+	// pattern（如 /sessions/{sid}）时会主动 307 redirect 到 trailing
+	// slash。但 axios 的 307 follow 默认会丢弃 POST body。这里手动把
+	// /api/v1/console/<no-trailing> 重定向为 308 保持 method + 带
+	// trailing slash，避免 axios 二次请求失败。
+	top.Handle("/api/v1/console", redirectNoTrailingSlash{stripped})
 	top.Handle("/console/", s.spaHandler())
 	top.Handle("/console", http.RedirectHandler("/console/", http.StatusMovedPermanently))
 	return top
+}
+
+// redirectNoTrailingSlash 拦截 /api/v1/console/<name>（无 trailing slash）
+// 的请求：若 path 不以 / 结尾 → 308 redirect 到同 path + "/"（保 method）。
+// 否则交给 next。
+type redirectNoTrailingSlash struct{ next http.Handler }
+
+func (r redirectNoTrailingSlash) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// 例：/api/v1/console/sessions → 308 /api/v1/console/sessions/
+	p := req.URL.Path
+	if len(p) > len("/api/v1/console") && p[len(p)-1] != '/' {
+		http.Redirect(w, req, p+"/", http.StatusPermanentRedirect)
+		return
+	}
+	r.next.ServeHTTP(w, req)
 }
 
 // trailingSlashStripper 把请求 path 的 trailing slash 去掉，再交给

@@ -15,6 +15,7 @@ import (
 	"deepseek-harness-go/internal/obs"
 	"deepseek-harness-go/internal/skill"
 	"deepseek-harness-go/internal/store"
+	streampkg "deepseek-harness-go/internal/stream"
 	"deepseek-harness-go/internal/tool"
 	usagemeter "deepseek-harness-go/internal/usage"
 )
@@ -355,6 +356,13 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 		totalUsage.PromptTokens += usage.PromptTokens
 		totalUsage.CompletionTokens += usage.CompletionTokens
 		totalUsage.TotalTokens += usage.TotalTokens
+		// v8.1 P1：v3 §E 拆细分：cache + reasoning tokens 也累加并实时推送。
+		totalUsage.CacheReadTokens += usage.CacheReadTokens
+		totalUsage.CacheWriteTokens += usage.CacheWriteTokens
+		totalUsage.ReasoningTokens += usage.ReasoningTokens
+		// 把本轮累计 usage 实时推给前端（SSE 帧 usage_update）。
+		// 流式期间 status bar 的 tok 数能跳。
+		out <- UsageUpdate{Usage: totalUsage, Round: rounds}
 		// v3 §E：llm_call 审计 + §C.3 span 属性。
 		r.auditLog(ctx, audit.Event{
 			SessionID:        sid,
@@ -397,14 +405,20 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 
 			t, ok := r.Registry.Get(tc.Function.Name)
 			if !ok {
-				content := "[ERROR] unknown tool: " + tc.Function.Name
+				// name 为空时通常意味着 LLM 流式响应里 name 还没
+				// 传完，或重组器把片段丢了；给一个更明确的诊断。
+				name := tc.Function.Name
+				content := "[ERROR] unknown tool: " + name
+				if name == "" {
+					content = "[ERROR] unknown tool: <empty name> (id=" + tc.ID + ", args=" + truncateArgs(tc.Function.Arguments) + ")"
+				}
 				toolMsg := llm.Message{
 					Role: llm.RoleTool, Content: content, ToolCallID: tc.ID,
 				}
 				msgs = append(msgs, toolMsg)
 				r.persistAppend(ctx, sid, toolMsg)
 				out <- ToolResult{
-					CallID: tc.ID, Name: tc.Function.Name,
+					CallID: tc.ID, Name: name,
 					Content: content, IsError: true, Took: 0,
 				}
 				continue
@@ -558,10 +572,11 @@ func (r *LoopRunner) doOneRound(ctx context.Context, msgs []llm.Message, out cha
 		}
 	}()
 	var (
-		text      strings.Builder
-		toolCalls []llm.ToolCall
-		finish    string
-		seenAny   bool
+		text         strings.Builder
+		toolCalls    []llm.ToolCall
+		finish       string
+		seenAny      bool
+		recombiner   = streampkg.NewRecombiner()
 	)
 	for chunk := range ch {
 		seenAny = true
@@ -574,8 +589,15 @@ func (r *LoopRunner) doOneRound(ctx context.Context, msgs []llm.Message, out cha
 			}
 		}
 		for _, tc := range chunk.ToolCalls {
-			toolCalls = append(toolCalls, tc)
+			recombiner.Append(llm.StreamChunk{
+				Index:     chunk.Index,
+				Text:      "",
+				Finish:    "",
+				ToolCalls: []llm.ToolCall{tc},
+			})
 		}
+		// 流式结束后一次性取最终 tool_calls。
+		// （设计：ch close 时 Final() 反映所有已到达 chunks 的状态）
 		if chunk.Finish != "" {
 			finish = chunk.Finish
 		}
@@ -590,6 +612,18 @@ func (r *LoopRunner) doOneRound(ctx context.Context, msgs []llm.Message, out cha
 	if !seenAny {
 		return llm.Message{}, usage, true, nil
 	}
+	// 从 Recombiner 取出最终 tool_calls（已按 ID/Index/Name 合并）。
+	toolCalls = recombiner.Final().ToolCalls
+	// 过滤：丢掉 ID/Name/Arguments 都为空的空 tool_call。
+	// 极端场景下 LLM 上游偶发空 entries 会污染后续 round 上下文。
+	filtered := toolCalls[:0]
+	for _, tc := range toolCalls {
+		if tc.ID == "" && tc.Index == nil && tc.Function.Name == "" && tc.Function.Arguments == "" {
+			continue
+		}
+		filtered = append(filtered, tc)
+	}
+	toolCalls = filtered
 	assistantMsg := llm.Message{
 		Role:      llm.RoleAssistant,
 		Content:   text.String(),
@@ -687,4 +721,14 @@ func lastUserContent(msgs []llm.Message) string {
 		}
 	}
 	return ""
+}
+
+// truncateArgs 截断 tool call arguments 用于错误信息展示。
+// 最多保留前 80 字符；超出加 "…" 后缀。
+func truncateArgs(s string) string {
+	const max = 80
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }

@@ -61,6 +61,80 @@ export const sessionsApi = {
     )
   },
 
+  // v8.1 P1：消息评分（dsh 原生 👍/👎）
+  setFeedback: async (
+    sid: string,
+    seq: number,
+    rating: -1 | 0 | 1,
+    comment = '',
+  ): Promise<void> => {
+    await client.post(
+      `/sessions/${encodeURIComponent(sid)}/messages/${seq}/feedback`,
+      { rating, comment },
+    )
+  },
+
+  // v8.1 P1：重生成 user 消息对应的 assistant 回复（返回 SSE stream）
+  regenerate: async (
+    sid: string,
+    seq: number,
+    onFrame: (f: SessionFrame) => void,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const token = useUserStore().token || ''
+    const resp = await fetch(
+      `/api/v1/console/sessions/${encodeURIComponent(sid)}/messages/${seq}/regenerate`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        signal,
+      },
+    )
+    if (!resp.ok || !resp.body) {
+      throw new Error(`regenerate failed (${resp.status})`)
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let idx
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        const line = frame.replace(/^data:\s*/, '').trim()
+        if (!line) continue
+        try {
+          onFrame(JSON.parse(line) as SessionFrame)
+        } catch {
+          /* skip */
+        }
+      }
+    }
+  },
+
+  // v8.1 P1：导出（md / jsonl）返回 Blob URL
+  exportMd: async (sid: string): Promise<Blob> => {
+    const resp = await client.get<Blob>(
+      `/sessions/${encodeURIComponent(sid)}/export`,
+      { params: { format: 'md' }, responseType: 'blob' },
+    )
+    return resp.data
+  },
+
+  exportJsonl: async (sid: string): Promise<Blob> => {
+    const resp = await client.get<Blob>(
+      `/sessions/${encodeURIComponent(sid)}/export`,
+      { params: { format: 'jsonl' }, responseType: 'blob' },
+    )
+    return resp.data
+  },
+
   /**
    * eventsSince 返回 sid 中 seq > since 的 events（升序）；不存在时返回 null。
    * 用于 v8.1 Spill 断点续传。

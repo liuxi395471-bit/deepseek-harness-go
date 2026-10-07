@@ -66,6 +66,13 @@ func NewSQLiteStoreWithOptions(path string, opts ...SQLiteOption) (*SQLiteStore,
 		_ = db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
+	// v8.1 schema migration：sessions 表的 cache_read_tokens /
+	// cache_write_tokens / reasoning_tokens 是在 schemaSQL 中新增的列；
+	// CREATE TABLE IF NOT EXISTS 不会 ALTER 旧表 → 必须显式补列。
+	if err := migrateSchemaV81(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate v8.1: %w", err)
+	}
 	// modernc.org/sqlite 默认关闭外键；启用它使 ON DELETE CASCADE 真正生效。
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		_ = db.Close()
@@ -104,7 +111,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     rounds      INTEGER NOT NULL DEFAULT 0,
     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens      INTEGER NOT NULL DEFAULT 0
+    total_tokens      INTEGER NOT NULL DEFAULT 0,
+    -- v8.1: cache + reasoning 细分（DeepSeek V4 / OpenAI o1 报告）
+    cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens   INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
     session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -127,6 +138,16 @@ CREATE TABLE IF NOT EXISTS events (
     actor       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq);
+
+-- v8.1 P1：消息评分（dsh 原生 feedback good/bad）
+CREATE TABLE IF NOT EXISTS message_ratings (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    msg_seq    INTEGER NOT NULL,
+    rating     INTEGER NOT NULL, -- +1 (good) / -1 (bad) / 0 (clear)
+    comment    TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, msg_seq)
+);
 `
 
 // Begin 插入新的会话行并返回它。
@@ -238,12 +259,14 @@ func (s *SQLiteStore) Load(ctx context.Context, id string) (Session, error) {
 		createdAt, updatedAt            int64
 		preview                         string
 		rounds, pt, ct, tt              int
+		cr, cw, rsn                     int
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT created_at, updated_at, preview, rounds,
-		        prompt_tokens, completion_tokens, total_tokens
+		        prompt_tokens, completion_tokens, total_tokens,
+		        cache_read_tokens, cache_write_tokens, reasoning_tokens
 		 FROM sessions WHERE id=?`, id,
-	).Scan(&createdAt, &updatedAt, &preview, &rounds, &pt, &ct, &tt)
+	).Scan(&createdAt, &updatedAt, &preview, &rounds, &pt, &ct, &tt, &cr, &cw, &rsn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -291,7 +314,14 @@ func (s *SQLiteStore) Load(ctx context.Context, id string) (Session, error) {
 		Rounds:     rounds,
 		Preview:    preview,
 		Messages:   msgs,
-		UsageTotal: llm.Usage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt},
+		UsageTotal: llm.Usage{
+			PromptTokens:     pt,
+			CompletionTokens: ct,
+			TotalTokens:      tt,
+			CacheReadTokens:  cr,
+			CacheWriteTokens: cw,
+			ReasoningTokens:  rsn,
+		},
 	}, nil
 }
 
@@ -337,16 +367,20 @@ func (s *SQLiteStore) List(ctx context.Context, limit, offset int) ([]Session, e
 	return out, nil
 }
 
-// UpdateUsage 将 delta 加到 UsageTotal。若 id 未知则返回 ErrNotFound。
+// UpdateUsage 将 delta 加到 UsageTotal（含 cache / reasoning 细分）。
 func (s *SQLiteStore) UpdateUsage(ctx context.Context, id string, delta llm.Usage) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions
 		 SET prompt_tokens = prompt_tokens + ?,
 		     completion_tokens = completion_tokens + ?,
 		     total_tokens = total_tokens + ?,
+		     cache_read_tokens = cache_read_tokens + ?,
+		     cache_write_tokens = cache_write_tokens + ?,
+		     reasoning_tokens = reasoning_tokens + ?,
 		     updated_at = ?
 		 WHERE id = ?`,
 		delta.PromptTokens, delta.CompletionTokens, delta.TotalTokens,
+		delta.CacheReadTokens, delta.CacheWriteTokens, delta.ReasoningTokens,
 		time.Now().UnixMilli(), id,
 	)
 	if err != nil {
@@ -440,6 +474,66 @@ func (s *SQLiteStore) DeleteMessage(ctx context.Context, sid string, msgSeq int6
 	}
 	s.projectCache.cache.Invalidate(sid)
 	return nil
+}
+
+// SetMessageRating 写评分；rating==0 时清除。
+func (s *SQLiteStore) SetMessageRating(ctx context.Context, sid string, msgSeq int64, rating int, comment string) error {
+	// 验证 session 存在
+	var x int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE id=?`, sid).Scan(&x); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("store: rating session check: %w", err)
+	}
+	// 验证 msg 存在（不能给空位评分）
+	var y int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM messages WHERE session_id=? AND seq=?`, sid, msgSeq).Scan(&y); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrMessageNotFound
+		}
+		return fmt.Errorf("store: rating message check: %w", err)
+	}
+	if rating == 0 {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM message_ratings WHERE session_id=? AND msg_seq=?`, sid, msgSeq)
+		if err != nil {
+			return fmt.Errorf("store: rating clear: %w", err)
+		}
+		return nil
+	}
+	if rating != 1 && rating != -1 {
+		return fmt.Errorf("store: invalid rating %d (must be -1, 0, or 1)", rating)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO message_ratings (session_id, msg_seq, rating, comment, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (session_id, msg_seq) DO UPDATE SET
+           rating=excluded.rating, comment=excluded.comment, updated_at=excluded.updated_at`,
+		sid, msgSeq, rating, comment, time.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("store: rating upsert: %w", err)
+	}
+	return nil
+}
+
+// ListMessageRatings 返回 sid 全部评分（key = msgSeq）。
+func (s *SQLiteStore) ListMessageRatings(ctx context.Context, sid string) (map[int64]MessageRating, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT msg_seq, rating, comment FROM message_ratings WHERE session_id=?`, sid)
+	if err != nil {
+		return nil, fmt.Errorf("store: rating list: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]MessageRating)
+	for rows.Next() {
+		var seq, rating int64
+		var comment string
+		if err := rows.Scan(&seq, &rating, &comment); err != nil {
+			return nil, fmt.Errorf("store: rating scan: %w", err)
+		}
+		out[seq] = MessageRating{Seq: seq, Rating: int(rating), Comment: comment}
+	}
+	return out, rows.Err()
 }
 
 // Close 关闭底层数据库。
@@ -641,4 +735,52 @@ func (p *sqliteProjectionCache) getOrCompute(sid, name string, compute func() (P
 	}
 	p.cache.Put(sid, name, s)
 	return s, nil
+}
+
+// migrateSchemaV81 给旧的 sessions 表补 cache_read_tokens /
+// cache_write_tokens / reasoning_tokens 列。CREATE TABLE IF NOT EXISTS
+// 在表已存在时不会 ALTER → 必须手动探测并 ALTER。重复执行是幂等的。
+//
+// 设计要点：
+//   - 用 PRAGMA table_info 探测列存在性；
+//   - 缺哪列就 ALTER ADD COLUMN 哪列；default 0 保证旧行合法。
+func migrateSchemaV81(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(sessions)")
+	if err != nil {
+		return fmt.Errorf("pragma table_info(sessions): %w", err)
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// v8.1 新增列：cache_read_tokens / cache_write_tokens / reasoning_tokens
+	adds := []struct {
+		col  string
+		def  string
+		want bool
+	}{
+		{"cache_read_tokens", "ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0", true},
+		{"cache_write_tokens", "ALTER TABLE sessions ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0", true},
+		{"reasoning_tokens", "ALTER TABLE sessions ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0", true},
+	}
+	for _, a := range adds {
+		if have[a.col] {
+			continue
+		}
+		if _, err := db.Exec(a.def); err != nil {
+			return fmt.Errorf("add column %s: %w", a.col, err)
+		}
+	}
+	return nil
 }
