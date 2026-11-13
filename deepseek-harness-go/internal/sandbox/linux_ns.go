@@ -1,6 +1,6 @@
 //go:build linux
 
-// Linux namespaces sandbox（DESIGN-v3 §F.3）。
+// Linux namespaces sandbox（ARCHITECTURE.md §12）。
 //
 // Apply 通过 syscall.SysProcAttr 启用 user/mount/pid 三层 namespace：
 //   - CLONE_NEWUSER：子进程在新的 user namespace 中获得"伪 root"，
@@ -33,7 +33,7 @@ func NewLinuxNS() Sandbox { return LinuxNS{} }
 // Name 实现 Sandbox。
 func (LinuxNS) Name() string { return "linux_ns" }
 
-// Apply 设置 SysProcAttr（§F.3）。同时校验 cmd.Path / cmd.Dir /
+// Apply 设置 SysProcAttr（ARCHITECTURE.md §12）。同时校验 cmd.Path / cmd.Dir /
 // cmd.Args[0] 不落在敏感路径（/etc/shadow 等）。
 //
 // NEWPID 启用后，子进程 PID 1 是它自身——因此以宿主角色拒绝 /proc/1

@@ -1,6 +1,6 @@
 // Package store：会话的导入/导出与按 id 恢复辅助函数。
 //
-// v2（DESIGN-v2 §C.1）：
+// 会话导出/导入（ARCHITECTURE.md §5）：
 //
 //   - Export：将一个会话（id、消息、用量、轮次、预览）序列化为可
 //     在之后导入的 JSON 文档。

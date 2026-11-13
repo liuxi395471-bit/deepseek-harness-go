@@ -6,7 +6,7 @@ import (
 	"deepseek-harness-go/internal/llm"
 )
 
-// Compactor 是调度器（§D.1）：判断 message 总 token 估算是否超过
+// Compactor 是调度器（ARCHITECTURE.md §10）：判断 message 总 token 估算是否超过
 // Trigger，超阈值时委托给 Strategy 压缩到约 Trigger/2。
 type Compactor struct {
 	Strategy   Strategy

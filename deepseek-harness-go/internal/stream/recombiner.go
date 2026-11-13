@@ -1,6 +1,6 @@
-﻿// Recombiner 保存一条正在构建的 assistant 消息的状态。
+// Recombiner 保存一条正在构建的 assistant 消息的状态。
 //
-// 关键不变量参见 DESIGN-v2 §A.1.1：
+// 关键不变量参见 ARCHITECTURE.md §6：
 //   - 相同 Index 的 delta 按到达顺序拼接
 //   - tool_call 片段按 (ID) 合并，Name/Type 仅填充一次
 //   - Final() 是幂等的

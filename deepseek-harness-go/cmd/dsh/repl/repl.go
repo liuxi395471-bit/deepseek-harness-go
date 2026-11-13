@@ -70,7 +70,7 @@ type Options struct {
 	Loader   SessionLoader
 	// OnSessionSwitch 让 runner 得知新的会话 id。
 	OnSessionSwitch func(newSID string)
-	// Skills 是已加载的 skill 列表（DESIGN-v3 §A）；/skills 命令展示。
+	// Skills 是已加载的 skill 列表（ARCHITECTURE.md §9）；/skills 命令展示。
 	Skills []skill.Skill
 }
 
@@ -240,7 +240,7 @@ func printHelp() {
 	fmt.Fprintln(os.Stderr, "  /usage                 print accumulated usage")
 	fmt.Fprintln(os.Stderr, "  /sessions              list persisted sessions")
 	fmt.Fprintln(os.Stderr, "  /history [N|<sid>]     show history (or switch session)")
-	fmt.Fprintln(os.Stderr, "  /skills                list loaded skills (DESIGN-v3 §A)")
+	fmt.Fprintln(os.Stderr, "  /skills                list loaded skills (ARCHITECTURE.md §9)")
 }
 
 // RunOnce 运行单条 prompt（-prompt 模式使用）后退出。

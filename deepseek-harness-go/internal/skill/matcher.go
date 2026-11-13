@@ -2,10 +2,10 @@ package skill
 
 import "strings"
 
-// KeywordMatcher 按 mention 关键词 + always-on 匹配 skill（§A.2）。
+// KeywordMatcher 按 mention 关键词 + always-on 匹配 skill（ARCHITECTURE.md §9）。
 type KeywordMatcher struct{}
 
-// Matcher 是触发匹配契约（§A.3）。KeywordMatcher 为默认实现。
+// Matcher 是触发匹配契约（ARCHITECTURE.md §9）。KeywordMatcher 为默认实现。
 type Matcher interface {
 	Match(skills []Skill, userPrompt string) []Skill
 }
@@ -40,7 +40,7 @@ func (KeywordMatcher) Match(skills []Skill, userPrompt string) []Skill {
 	return out
 }
 
-// Inject 把命中的 skill body 拼接到 system prompt 之后（§A.4）。
+// Inject 把命中的 skill body 拼接到 system prompt 之后（ARCHITECTURE.md §9）。
 // 命中列表为空时原样返回 system。
 func Inject(system string, matched []Skill) string {
 	if len(matched) == 0 {

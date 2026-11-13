@@ -1,0 +1,27 @@
+﻿event: phase_change
+data: {"at":"2026-10-25T17:10:16Z","phase":"init"}
+
+event: phase_change
+data: {"at":"2026-10-25T17:10:16Z","phase":"llm_call"}
+
+event: assistant_delta
+data: {"index":0,"text":"浣犲ソ锛屾垜鏄?"}
+
+event: assistant_delta
+data: {"index":0,"text":"**娴佸紡** "}
+
+event: assistant_delta
+data: {"index":0,"text":"mock 妯″瀷銆?}
+
+event: assistant_delta
+data: {"index":0,"text":"\n\n浣犲彂鐨勬秷鎭槸锛?}
+
+event: assistant_delta
+data: {"index":0,"text":"\n\n```js\nconsole.log('hi')\n```"}
+
+event: assistant_message
+data: {"content":"浣犲ソ锛屾垜鏄?**娴佸紡** mock 妯″瀷銆俓n\n浣犲彂鐨勬秷鎭槸锛歕n\n```js\nconsole.log('hi')\n```","tool_calls":null}
+
+event: loop_done
+data: {"error":"","rounds":1,"session_id":"657fe1ba7afe9d6b89897e4735e2e156","stop_reason":"no_tool_calls","usage":{"completion_tokens":14,"prompt_tokens":9,"total_tokens":23}}
+

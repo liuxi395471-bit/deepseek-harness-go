@@ -1,8 +1,8 @@
-// Package ollama 实现 DESIGN-v3 §G.1：Ollama provider。
+// Package ollama 实现 ARCHITECTURE.md §6：Ollama provider。
 //
 // 协议：POST {BaseURL}/api/chat。流式响应是 ndjson（每行一个 JSON
 // 对象），不是 SSE，但对外仍以 llm.Client 的 Chat/ChatStream 语义
-// 呈现（§G.1 "Ollama 用 ndjson 而不是 SSE，但接口一致"）。
+// 呈现（ARCHITECTURE.md §6 "Ollama 用 ndjson 而不是 SSE，但接口一致"）。
 package ollama
 
 import (

@@ -4,7 +4,7 @@
 // 以及用于列表展示的预览。Store 接口支持两种后端——MapStore（内存，
 // 仅测试用）和 SQLiteStore（默认磁盘存储）——在构造时选择。
 //
-// 迁移/淘汰策略（DESIGN-v2 §A.3.7）：v1 没有历史记录；v2 在
+// 迁移/淘汰策略（ARCHITECTURE.md §5）：v1 没有历史记录；v2 在
 // session.enabled=true 时加入持久化。当 session.enabled=false（或 v1
 // 接线中 Store==nil）时，行为与 v1 完全一致。
 package store

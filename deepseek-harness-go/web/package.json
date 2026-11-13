@@ -1,0 +1,27 @@
+{
+  "name": "deepseek-harness-console",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Web Console for DeepSeek Harness Go — ChatGPT 风格前端",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build && node -e \"require('fs').writeFileSync('../internal/webui/dist/.gitkeep','')\"",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.16",
+    "highlight.js": "^11.12.0",
+    "lucide-vue-next": "^0.469.0",
+    "marked": "^15.0.12",
+    "vue": "^3.5.43"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3",
+    "vue-tsc": "^2.2.12"
+  }
+}

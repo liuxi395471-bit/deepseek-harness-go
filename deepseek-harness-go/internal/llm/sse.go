@@ -13,6 +13,8 @@ type sseFrame struct {
 // Chunk 返回指定 choice 下标对应的已解码 StreamChunk。
 func (f sseFrame) Chunk(idx int) StreamChunk {
 	sc := StreamChunk{Index: idx}
+	// usage 与 choices 平级，出现在终止帧上；透传给调用方。
+	sc.Usage = f.parsed.Usage
 	for _, c := range f.parsed.Choices {
 		if c.Delta.Content != "" {
 			sc.Text = c.Delta.Content

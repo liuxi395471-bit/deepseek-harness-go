@@ -1,4 +1,4 @@
-// Package gemini 实现 DESIGN-v3 §G.2：Google Gemini provider。
+// Package gemini 实现 ARCHITECTURE.md §6：Google Gemini provider。
 //
 // 协议：
 //   - 非流式：POST /v1beta/models/{model}:generateContent

@@ -1,21 +1,21 @@
 // Command dsh 是 DeepSeek Harness Go CLI 的入口。
 //
 // 它从 -config（默认 ./harness.yml）加载配置，按 llm.provider 装配
-// LLM 客户端（DESIGN-v3 §G.3），注册内置工具，然后根据参数执行
+// LLM 客户端（ARCHITECTURE.md §6），注册内置工具，然后根据参数执行
 // 以下之一：
 //
 //	-prompt <text>   非交互式运行单条 prompt 后退出
-//	-serve           启动 HTTP+SSE 服务器（DESIGN-v2 §A.2）并阻塞
+//	-serve           启动 HTTP+SSE 服务器（ARCHITECTURE.md §13）并阻塞
 //	（默认）          进入交互式 REPL
 //
-// v3 新增（DESIGN-v3 §A/§B/§C/§D/§E/§F）：
+// v3 新增能力（详见 ARCHITECTURE.md）：
 //
-//	skills 加载并注入 runner（mention / always-on 触发）
-//	agent_spawn 子 agent 工具注册
-//	obs.provider=otel 时启用 OTel tracer（默认 noop 零开销）
-//	compaction.enabled 时挂载上下文压缩器
-//	--audit / cfg.audit.path 打开 JSONL 审计日志
-//	sandbox.provider 应用到 shell 工具子进程
+//	skills 加载并注入 runner（mention / always-on 触发）—— §9
+//	agent_spawn 子 agent 工具注册 —— §8
+//	obs.provider=otel 时启用 OTel tracer（默认 noop 零开销）—— §11
+//	compaction.enabled 时挂载上下文压缩器 —— §10
+//	--audit / cfg.audit.path 打开 JSONL 审计日志 —— §11
+//	sandbox.provider 应用到 shell 工具子进程 —— §12
 //
 // 信号处理：
 //
@@ -55,14 +55,15 @@ import (
 	"deepseek-harness-go/internal/tool"
 	"deepseek-harness-go/internal/tools"
 	"deepseek-harness-go/internal/usage"
+	"deepseek-harness-go/internal/webui"
 )
 
 var (
 	configPath = flag.String("config", "harness.yml", "path to harness.yml (empty for defaults + env only)")
 	prompt     = flag.String("prompt", "", "if non-empty, run a single prompt and exit (no REPL)")
-	serveFlag  = flag.Bool("serve", false, "start HTTP+SSE server (DESIGN-v2 §A.2) instead of REPL; cfg.server.enabled must be true")
+	serveFlag  = flag.Bool("serve", false, "start HTTP+SSE server (ARCHITECTURE.md §13) instead of REPL; cfg.server.enabled must be true")
 	debug      = flag.Bool("debug", false, "print all agent events to stderr")
-	auditPath  = flag.String("audit", "", "path to audit.jsonl (DESIGN-v3 §E); overrides cfg.audit.path. Empty disables auditing.")
+	auditPath  = flag.String("audit", "", "path to audit.jsonl (ARCHITECTURE.md §11); overrides cfg.audit.path. Empty disables auditing.")
 
 	// --plugin 可重复使用：每次出现追加一个路径。flag.StringVar 做不到
 	// 这一点，因此我们注册一个自定义函数来向 plugins 追加。
@@ -80,7 +81,7 @@ func (p *pluginPaths) Set(v string) error {
 }
 
 func init() {
-	flag.Var(&plugins, "plugin", "path to plugin executable (DESIGN-v2 §B.2); repeatable. Spawns a child gRPC server per occurrence and merges its tools into the registry.")
+	flag.Var(&plugins, "plugin", "path to plugin executable (ARCHITECTURE.md §14); repeatable. Spawns a child gRPC server per occurrence and merges its tools into the registry.")
 }
 
 // version 在发布时通过 -ldflags 注入。默认值让它在开发构建中
@@ -105,7 +106,7 @@ func main() {
 		log.Fatalf("[dsh] mkdir workspace: %v", err)
 	}
 
-	// v3 §C：可观测性。provider=noop（默认）零开销；otel 时构建
+	// ARCHITECTURE.md §11：可观测性。provider=noop（默认）零开销；otel 时构建
 	// OTLP tracer；debug 时日志走 stderr logger。
 	obsProvider, otelHandle := setupObs(rootCtx, cfg, *debug || cfg.Agent.Debug)
 	if otelHandle != nil {
@@ -118,7 +119,7 @@ func main() {
 		}()
 	}
 
-	// v3 §G：provider 路由（openai | anthropic | ollama | gemini）。
+	// ARCHITECTURE.md §6：provider 路由（openai | anthropic | ollama | gemini）。
 	llmClient, err := provider.NewClient(cfg.LLM)
 	if err != nil {
 		log.Fatalf("[dsh] llm: %v", err)
@@ -128,7 +129,7 @@ func main() {
 	tools.MustRegisterBuiltin(reg, cfg.Agent.WorkspaceRoot)
 	toolGlobal = reg // 暴露给 loadPlugins 填充
 
-	// v3 §F：OS sandbox（默认 noop）。应用于 shell 工具的子进程。
+	// ARCHITECTURE.md §12：OS sandbox（默认 noop）。应用于 shell 工具的子进程。
 	sb, err := sandbox.New(cfg.Sandbox.Provider)
 	if err != nil {
 		log.Fatalf("[dsh] sandbox: %v", err)
@@ -137,7 +138,7 @@ func main() {
 		log.Printf("[dsh] sandbox: %s", sb.Name())
 	}
 
-	// shell 工具装配（DESIGN-v2 §C.3 + v3 §F.4）。allowlist 为空时
+	// shell 工具装配（ARCHITECTURE.md §7 + v3 ARCHITECTURE.md §12）。allowlist 为空时
 	// 工具默认拒绝所有命令。
 	if cfg.Shell.Enabled {
 		shellTool := tools.NewShellTool(tools.ShellConfig{
@@ -153,7 +154,7 @@ func main() {
 		}
 	}
 
-	// v2 插件系统（DESIGN-v2 §B）。提供 --plugin 时，将每个插件作为
+	// v2 插件系统（ARCHITECTURE.md §14）。提供 --plugin 时，将每个插件作为
 	// 子 gRPC 服务器启动，建立连接，并把其工具合并进注册表。失败即致命
 	// —— 宁可拒绝启动，也不能静默丢弃用户明确要求的工具。
 	if len(plugins) > 0 {
@@ -170,7 +171,7 @@ func main() {
 		}()
 	}
 
-	// v3 §B：注册 agent_spawn 子 agent 工具。子 runner 共享 LLM
+	// ARCHITECTURE.md §8：注册 agent_spawn 子 agent 工具。子 runner 共享 LLM
 	// client 与工具注册表（不含 agent_spawn 自身——禁止嵌套）。
 	// 必须在插件加载之后调用，子 agent 才能继承插件工具。
 	if _, err := subagent.Attach(reg, llmClient, cfg.LLM.Model,
@@ -186,7 +187,7 @@ func main() {
 	)
 	runner.Obs = obsProvider
 
-	// v3 §A：加载 skills（mention / always-on 触发注入）。
+	// ARCHITECTURE.md §9：加载 skills（mention / always-on 触发注入）。
 	loadedSkills, err := loadSkills(cfg.Skills.Dir)
 	if err != nil {
 		log.Fatalf("[dsh] skills: %v", err)
@@ -196,7 +197,7 @@ func main() {
 		log.Printf("[dsh] skills: loaded %d from %s", len(loadedSkills), skillsDir(cfg.Skills.Dir))
 	}
 
-	// v3 §D：上下文压缩（默认关闭）。
+	// ARCHITECTURE.md §10：上下文压缩（默认关闭）。
 	if cfg.Compaction.Enabled {
 		var strat compaction.Strategy
 		switch cfg.Compaction.Strategy {
@@ -218,7 +219,7 @@ func main() {
 			cfg.Compaction.Strategy, cfg.Compaction.TriggerTokens, cfg.Compaction.KeepRecent)
 	}
 
-	// v3 §E：审计日志。--audit 优先于 cfg.audit.path；两者都为空时关闭。
+	// ARCHITECTURE.md §11：审计日志。--audit 优先于 cfg.audit.path；两者都为空时关闭。
 	if path := resolveAuditPath(cfg); path != "" {
 		al, err := audit.NewFileLogger(path, !cfg.Audit.Full)
 		if err != nil {
@@ -239,7 +240,7 @@ func main() {
 		defer st.Close()
 	}
 
-	// v2 用量聚合（DESIGN-v2 §A.4）。空的 PriceMap → 成本快照为 0，
+	// v2 用量聚合（ARCHITECTURE.md §5.1）。空的 PriceMap → 成本快照为 0，
 	// 但 token 计数仍会记录。
 	tracker := usage.NewTracker(usage.PriceMap{}, "USD")
 	_ = tracker
@@ -268,7 +269,7 @@ func main() {
 	}, &repl.REPLState{})
 }
 
-// setupObs 按 cfg.Obs 构建 obs.Provider（§C.2 / §C.4）。
+// setupObs 按 cfg.Obs 构建 obs.Provider（ARCHITECTURE.md §11 / ARCHITECTURE.md §11）。
 // 返回的 handle 非 nil 时（otel 模式），调用方负责在退出前 Close。
 func setupObs(ctx context.Context, cfg config.Config, debug bool) (obs.Provider, *obs.OTelTracerHandle) {
 	p := obs.Defaults()
@@ -292,8 +293,8 @@ func setupObs(ctx context.Context, cfg config.Config, debug bool) (obs.Provider,
 	return p, handle
 }
 
-// loadSkills 读取 skill 目录（§A.1）。目录不存在 → 空列表不报错；
-// 文件解析失败（frontmatter 缺字段等）→ 致命错误，不静默（§A.5）。
+// loadSkills 读取 skill 目录（ARCHITECTURE.md §6）。目录不存在 → 空列表不报错；
+// 文件解析失败（frontmatter 缺字段等）→ 致命错误，不静默（ARCHITECTURE.md §9）。
 func loadSkills(dir string) ([]skill.Skill, error) {
 	path := skillsDir(dir)
 	return skill.NewFileLoader().Load(path)
@@ -365,6 +366,16 @@ func runServer(ctx context.Context, runner *agent.LoopRunner, st store.Store, cf
 		MaxSessions: cfg.Server.MaxSessions,
 	}, runner, st)
 
+	// 挂载前端 SPA（内嵌的 web/dist）。未执行 `npm run build` 时
+	// Available() 返回 false —— 此时退化为纯 API 模式，不影响使用。
+	if webui.Available() {
+		srv.SetUI(webui.Handler())
+		log.Printf("[dsh] serve: web console at http://%s/", cfg.Server.Listen)
+	} else {
+		log.Printf("[dsh] serve: web console not built " +
+			"(run `npm run build` in deepseek-harness-go/web); serving API only")
+	}
+
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           srv.Handler(),
@@ -426,7 +437,7 @@ func loadPlugins(ctx context.Context, paths []*string) []*plugin.Host {
 		if err := h.Start(ctx); err != nil {
 			log.Fatalf("[dsh] plugin %s: start: %v", *p, err)
 		}
-		// 启动后台监视器，在插件崩溃时自动重启（DESIGN-v2 §B.5）。
+		// 启动后台监视器，在插件崩溃时自动重启（ARCHITECTURE.md §14）。
 		// Start 已在上面调用过；Watch 只是添加监视 goroutine，
 		// 监视器本身出错不会导致致命失败。
 		go func() { _ = h.Watch(ctx) }()
@@ -444,7 +455,7 @@ func loadPlugins(ctx context.Context, paths []*string) []*plugin.Host {
 		}
 		added, names, err := client.Register(toolGlobal, plugin.ApproverFunc(func(_ context.Context, _ plugin.Request) (plugin.Decision, error) {
 			// CLI 场景下我们直接自动批准；面向模型的审批系统
-			// （DESIGN-v2 §C）位于 tools/shell.go。
+			// （ARCHITECTURE.md §7）位于 tools/shell.go。
 			return plugin.ApproveOnce, nil
 		}))
 		if err != nil {

@@ -1,5 +1,5 @@
 // Package mcp —— 封装 JSON-RPC 传输层的高层会话
-// （DESIGN-v2 SD.1）。
+// （ARCHITECTURE.md §15）。
 //
 // MCP 的"高层"操作才是大多数调用者真正需要的：
 //   - Initialize 握手

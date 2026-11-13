@@ -1,4 +1,4 @@
-// Package provider 实现 DESIGN-v3 §G.3：provider 路由。
+// Package provider 实现 ARCHITECTURE.md §6：provider 路由。
 //
 // 单独成包是因为 anthropic/ollama/gemini 子包都依赖 internal/llm
 // 的类型（Message / ChatRequest 等），路由放在 llm 包内会构成
@@ -18,11 +18,11 @@ import (
 	"deepseek-harness-go/internal/llm/ollama"
 )
 
-// SupportedProviders 列出可用的 provider（§G.5：未支持 provider
+// SupportedProviders 列出可用的 provider（ARCHITECTURE.md §6：未支持 provider
 // 启动时报错并列出支持列表）。
 var SupportedProviders = []string{"openai", "anthropic", "ollama", "gemini"}
 
-// NewClient 按 cfg.Provider 构建 LLM Client（§G.3）。
+// NewClient 按 cfg.Provider 构建 LLM Client（ARCHITECTURE.md §6）。
 //   - openai（默认，含空值）：OpenAI Chat Completions 兼容端点
 //   - anthropic：internal/llm/anthropic
 //   - ollama：本机 /api/chat（base-url 可覆盖）

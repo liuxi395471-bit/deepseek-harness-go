@@ -17,7 +17,7 @@ type SubResult struct {
 
 // ToToolResult 把子 agent 结果折叠为父 runner 可用的 tool.Result：
 //   - 正常完成 → Ok(final assistant text)
-//   - canceled → Err("canceled")（§B.3：ctx cancel → is_error, msg=canceled）
+//   - canceled → Err("canceled")（ARCHITECTURE.md §8：ctx cancel → is_error, msg=canceled）
 //   - panic / 其他错误 → Err(错误消息)（is_error=true）
 func (r SubResult) ToToolResult() tool.Result {
 	if r.Err != nil {

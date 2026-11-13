@@ -19,7 +19,7 @@ func TestHelperChild(t *testing.T) {
 	t.Skip("helper only")
 }
 
-// TestWindowsACLApplyCreatesRestrictedToken 验收 §F.5（windows）：
+// TestWindowsACLApplyCreatesRestrictedToken 验收 ARCHITECTURE.md §12（windows）：
 // Apply 能创建受限令牌并设置到 SysProcAttr；随后用该令牌真正启动
 // 一个子进程（测试二进制自身，不在敏感路径上），验证受限令牌下
 // 进程可用。

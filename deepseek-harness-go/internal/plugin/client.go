@@ -1,4 +1,4 @@
-// Package plugin 承载 v2 插件传输层（DESIGN-v2 §B）。
+// Package plugin 承载 v2 插件传输层（ARCHITECTURE.md §14）。
 //
 // 插件是一个外部子进程，在 TCP 套接字上通过明文 HTTP/2 遵循
 // tool_provider.proto 中的 gRPC 契约进行通信。宿主的流程：
@@ -10,7 +10,7 @@
 //  5. 将来自 LLM 的工具调用转发给 Execute()。
 //
 // 子进程崩溃时，Host 的自动重启循环最多重新拉起 MaxRestarts 次
-// （DESIGN-v2 §B.5）。之后，插件工具被标记为不健康，
+// （ARCHITECTURE.md §14）。之后，插件工具被标记为不健康，
 // 工具调用将以结构化错误失败。
 package plugin
 
@@ -118,7 +118,7 @@ func (c *Client) Close() error {
 // Register 将插件的工具安装到 reg 中。返回新增工具的数量和已安装
 // 的名称（供调用方记录日志）。
 //
-// 每次 Execute 调用前都会征询提供的 approver（依据 DESIGN-v2 §B.5：
+// 每次 Execute 调用前都会征询提供的 approver（依据 ARCHITECTURE.md §14：
 // 插件工具默认需要审批，除非插件设置了
 // ToolSpec.requires_approval=false）。
 func (c *Client) Register(reg *tool.Registry, approver Approver) (added int, names []string, err error) {
@@ -186,7 +186,7 @@ func (t *grpcTool) Parameters() any {
 
 // Execute 实现 tool.Tool。
 func (t *grpcTool) Execute(ctx context.Context, args json.RawMessage) (tool.Result, error) {
-	// 审批关口（DESIGN-v2 §B.5）。只有当插件作者通过
+	// 审批关口（ARCHITECTURE.md §14）。只有当插件作者通过
 	// ToolSpec.requires_approval=false 显式 opting out 时才跳过。
 	if t.requiresAppr {
 		dec, err := t.approver.Approve(ctx, Request{
@@ -256,7 +256,7 @@ func WithDialTimeout(d time.Duration) ClientOption {
 	return func(c *clientConfig) { c.dialTimeout = d }
 }
 
-// ----- 审批（DESIGN-v2 §C.2） ---------------------------------------------
+// ----- 审批（ARCHITECTURE.md §7.1） ---------------------------------------------
 //
 // 插件审批委托给与 shell 工具相同的 Approver 接口。插件适配器
 // 将 tool.Tool 调用转换为 approval.Request，并遵循

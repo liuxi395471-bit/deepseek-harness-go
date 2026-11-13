@@ -1,11 +1,11 @@
-# End-to-end example: the `greet` session
+# 端到端示例：`greet` 会话
 
-This is the canonical smoke test for `dsh`. Once it works, your environment is wired correctly end-to-end.
+这是 `dsh` 的**权威冒烟测试**。跑通它，说明你的环境已经端到端接好了。
 
 ```text
 $ go build ./cmd/dsh
-$ ./dsh -config ./harness.example.yml -debug
-dsh 0.1.0-dev — workspace=/abs/path/.dsh/workspace model=glm-5.3-flash
+$ ./dsh -config ./harness.yml -debug
+dsh 3.0.0-dev — workspace=/abs/path/.dsh/workspace model=glm-5.3-flash provider=openai
 dsh> ready. type your prompt, 'exit' or Ctrl+D to quit.
 dsh>
 
@@ -23,19 +23,30 @@ dsh> exit
 $
 ```
 
-## What this proves
+## 这证明了什么
 
-1. ✅ Config loads (no env override needed because `harness.example.yml` carries the demo URL).
-2. ✅ LLM endpoint is reachable and tool-calling is enabled.
-3. ✅ Tool registry + system prompt composition (model sees `greet` in the tool catalogue).
-4. ✅ ReAct loop runs at least one round (LLM → tool_call → tool_result → LLM).
-5. ✅ Event channel reaches REPL: `PhaseChange` / `ToolCallStart` / `ToolResult` / `AssistantMessage`.
-6. ✅ Final assistant content is printed to stdout.
-7. ✅ Clean exit on `exit`.
+1. ✅ 配置能加载（`harness.yml` 语法正确，或 env 覆盖生效）。
+2. ✅ LLM 端点可达，且支持工具调用。
+3. ✅ 工具注册表与 system prompt 组合正确（模型能在工具清单里看到 `greet`）。
+4. ✅ ReAct 循环至少跑了一轮（LLM → tool_call → tool_result → LLM）。
+5. ✅ 事件通道能到达 REPL：`PhaseChange` / `ToolCallStart` / `ToolResult` / `AssistantMessage`。
+6. ✅ 最终助手内容打印到 stdout。
+7. ✅ `exit` 能干净退出。
 
-If any step fails, check (in order):
+## 排查顺序
 
-1. **Config load error** at startup → re-check `harness.yml` syntax and `DEEPSEEK_BASE_URL`.
-2. **`phase=llm_call` then immediate `error`** → run `llmprobe` to isolate LLM-vs-Runner.
-3. **Model never returns `tool_calls`** → your model may not support tool calling, or the system prompt is too restrictive; try a different model.
-4. **`unknown tool: greet`** → internal tools were not registered; rebuild from `cmd/dsh`.
+若某一步失败，按此顺序检查：
+
+1. **启动即配置报错** → 检查 `harness.yml` 语法与 `DEEPSEEK_BASE_URL`。
+2. **`phase=llm_call` 后立刻 `error`** → 用 `-prompt` 单次模式复现，缩小到 LLM 层还是 Runner 层：
+   ```bash
+   ./dsh -config ./harness.yml -prompt "你好" -debug
+   ```
+3. **模型从不返回 `tool_calls`** → 该模型可能不支持工具调用，或 system prompt 过于限制；换一个模型试试。
+4. **`unknown tool: greet`** → 内置工具没被注册；确认是从 `cmd/dsh` 构建的二进制。
+
+> 提示：`-debug` 会把所有 agent 事件打到 stderr，助手正文仍在 stdout，两者互不干扰。
+
+---
+
+**相关文档**：[README.md](../README.md)（快速开始）· [ARCHITECTURE.md](../ARCHITECTURE.md)（架构设计）· [TESTING.md](../TESTING.md)（测试与验收）

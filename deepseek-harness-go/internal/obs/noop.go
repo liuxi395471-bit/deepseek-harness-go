@@ -2,7 +2,7 @@ package obs
 
 import "context"
 
-// NoopLogger 丢弃所有日志事件；默认实现（§C.5 "provider=noop 零开销"）。
+// NoopLogger 丢弃所有日志事件；默认实现（ARCHITECTURE.md §11 "provider=noop 零开销"）。
 type NoopLogger struct{}
 
 func (NoopLogger) Debug(context.Context, string, ...Attr) {}

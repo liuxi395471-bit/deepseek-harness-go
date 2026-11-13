@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | [`deepseek-harness/`](./deepseek-harness) | TypeScript / Node.js（pnpm workspace） | 上游官方实现，活跃迭代 | 由 [DeepSeek AI](https://deepseek.com) 开发的开源 agent harness，基于 Cordis 的「一切皆插件」架构 |
 | [`deepseek-harness-java/`](./deepseek-harness-java) | Java 17 + Spring Boot 3.3 + DDD 六边形 | 已实现，多模块可运行 | 基于 DDD 与端口-适配器的模块化 Agent 运行时，支持插件 / MCP / 审批 / 持久化 |
-| [`deepseek-harness-go/`](./deepseek-harness-go) | Go（仅 `PLAN.md`） | 规划中，代码待落地 | 参照 Java 版实现一个最小可运行的 CLI 版 harness，聚焦 ReAct 闭环 |
+| [`deepseek-harness-go/`](./deepseek-harness-go) | Go（CLI + HTTP 服务） | 已实现，v3.0.0-dev | 参照 Java 版核心抽象实现的 ReAct agent harness：ReAct 循环 / 多渠道 LLM / 工具 / 插件 / MCP / 审批 / 沙箱 / 审计 / 可观测 |
 
 ---
 
@@ -16,7 +16,9 @@
 
 - **上游（TS）**：cordis + plugin-first，覆盖 Web/CLI/Desktop 三端，体量最大、能力最全（session 事件溯源、工具目录、SSE 流式、landlock 沙箱、subagent、ACR/MCP/Codex 子进程桥等），是目前事实上的"参考实现"。
 - **Java 版**：把上游思路用 DDD 重写为强分层（app / trigger / api / case / domain / infrastructure / types），把"插件"拆成 JAVA_NATIVE / DSH_NODE_BRIDGE / MCP 三类桥，单实例 Agent Harness 形态，最贴近企业 Java 栈。
-- **Go 版（规划中）**：把 Java 版的核心闭环抽到最小可运行形态，**只做 ReAct + 内置工具 + CLI REPL**，作为"练手 + Go 实现参考"。
+- **Go 版（已实现）**：把 Java 版的核心闭环用 Go 落地为**可运行的** harness——ReAct 循环 + 内置工具 + CLI REPL + HTTP/SSE 服务，
+  并在此之上补齐了 Skill 系统、子 agent、上下文压缩、OTel 可观测、JSONL 审计、OS 沙箱与多渠道 LLM（OpenAI / Anthropic / Ollama / Gemini）。
+  当前 24 个包测试全绿，作为"Go 实现参考"使用。
 
 子项目间的依赖关系：
 
@@ -61,22 +63,22 @@ Java 版与 Go 版**不依赖**上游 TS 代码，仅以"理解设计意图"为�
 
 ### 2.3 [`deepseek-harness-go/`](./deepseek-harness-go)
 
-- **当前文档**：[`PLAN.md`](./deepseek-harness-go/PLAN.md)（实施规划：目标、范围、阶段 M0–M4、技术选型、风险）+ [`DESIGN.md`](./deepseek-harness-go/DESIGN.md)（第一版设计：接口签名、状态机、错误模型、取消链、可执行的 Runner 伪码）。
-- **目标**：以 Java 版核心抽象为蓝本，用 Go 实现 CLI 形态的最小可运行 agent harness。
-- **规划范围**（首版交付）：项目骨架 + config、`llm.Client`（OpenAI 兼容）、`tool.Registry` + 3 个内置工具（`greet`/`fs_read`/`fs_write`）、`agent.Runner` ReAct 循环、CLI REPL 入口。
-- **明确排除**（首版不做）：Web UI / HTTP、插件系统、Session 持久化、Approval / 沙箱 / MCP / Skill、subagent。
-- **后续里程碑**：M5 HTTP+最小 Web、M6 插件系统、M7 Session 持久化 + Approval + shell 工具。
+- **当前文档**：[`README.md`](./deepseek-harness-go/README.md)（快速开始与配置）+ [`docs/ARCHITECTURE.md`](./deepseek-harness-go/docs/ARCHITECTURE.md)（架构设计）+ [`docs/TESTING.md`](./deepseek-harness-go/docs/TESTING.md)（测试与验收）。
+- **技术栈**：Go 1.26，四个三方依赖（`yaml.v3` / `modernc.org/sqlite` 纯 Go / `grpc` + `protobuf` / `otel` opt-in）。
+- **形态**：CLI（`cmd/dsh`：REPL / `-prompt` / `-serve`）+ HTTP+SSE 服务；24 个包测试全绿。
+- **核心能力**：ReAct 循环（`agent.LoopRunner`）、工具系统（`greet`/`fs_read`/`fs_write`/`shell` + `agent_spawn`）、多渠道 LLM（OpenAI / Anthropic / Ollama / Gemini）、Session 持久化（内存 + SQLite）、4 种 Approver、gRPC 插件宿主、MCP stdio Session、Skill 加载器、上下文压缩、OTel 可观测、JSONL 审计、OS 沙箱（Windows ACL / Linux ns）。
+- **明确不做**：Web UI / Desktop、并发 sub-agent、Plan mode / Persona / Schedule。
 
 ---
 
 ## 3. 共有的核心抽象
 
-| 抽象 | 上游 TS（`deepseek-harness`） | Java 版 | Go 版（规划） |
+| 抽象 | 上游 TS（`deepseek-harness`） | Java 版 | Go 版 |
 | --- | --- | --- | --- |
-| ReAct 循环 | `packages/agent` + loop / phase 状态机 | `ReactLoopAgent` | `agent.Runner` |
+| ReAct 循环 | `packages/agent` + loop / phase 状态机 | `ReactLoopAgent` | `agent.LoopRunner` |
 | 工具接口 | Tool interface（name/parameters/execute） | `AbstractTool` + `ToolDefinition` | `tool.Tool` interface |
 | 工具注册表 | `ToolRegistry`（cordis scope） | `InMemoryToolRegistry` | `tool.Registry` |
-| LLM 客户端 | `packages/llm`（Cordis Providers） | `DeepSeekAdapter` / `OpenAiCompatibleAdapter` | `llm.Client`（OpenAI 兼容 REST） |
+| LLM 客户端 | `packages/llm`（Cordis Providers） | `DeepSeekAdapter` / `OpenAiCompatibleAdapter` | `llm.Client` + `llm/provider` 路由（4 渠道） |
 | 配置 | `harness.yml` + env 覆盖 + 数据库 | `harness.yml` + `application.yml` + Spring 注入 | `harness.yml` + env 覆盖 |
 | 入口 | `apps/cli`、`apps/web`、`apps/desktop` | Spring Boot `Application.main` | `cmd/dsh/main.go` |
 
@@ -91,7 +93,7 @@ deepseek-harness-all/
 ├── README.md                    # 本文档
 ├── deepseek-harness/            # 上游官方 TS/Node 版
 ├── deepseek-harness-java/       # Java 17 + Spring Boot 3 + DDD 实现
-└── deepseek-harness-go/         # Go 版（仅 PLAN.md，待实施）
+└── deepseek-harness-go/         # Go 版（可运行的 ReAct agent harness）
 ```
 
 每个子项目都是**独立工程**：各自有自己的 `package.json` / `pom.xml` / `go.mod`（计划）、独立的依赖、独立构建，互不交叉引用。
@@ -115,7 +117,8 @@ deepseek-harness-all/
 - 想跑通 **Java 版 Spring Boot Harness** → [`deepseek-harness-java/README.md`](./deepseek-harness-java/README.md) §2 快速体验（Standalone H2 / MySQL / Docker Compose）。
 - 想看 **DDD / 六边形 / 端口-适配器** 怎么落地 Agent → [`deepseek-harness-java/README.md`](./deepseek-harness-java/README.md) §3–5 与 `docs/md/domain-design.md`。
 - 想在 **Java 版上做插件** → [`deepseek-harness-java/README.md`](./deepseek-harness-java/README.md) §7（Java Native / Node Bridge / MCP）以及 `docs/md/java-plugin-development.md`。
-- 想看 **Go 版的实施规划与设计** → [`deepseek-harness-go/PLAN.md`](./deepseek-harness-go/PLAN.md)（M0–M4 阶段、首版范围、风险）与 [`deepseek-harness-go/DESIGN.md`](./deepseek-harness-go/DESIGN.md)（接口签名、ReAct 状态机、错误/取消模型）。
+- 想跑通 **Go 版 dsh** → [`deepseek-harness-go/README.md`](./deepseek-harness-go/README.md)（快速开始、配置项、v3 能力详解）。
+- 想看 **Go 版怎么设计** → [`deepseek-harness-go/docs/ARCHITECTURE.md`](./deepseek-harness-go/docs/ARCHITECTURE.md)（包图、ReAct 数据流、各模块契约）与 [`docs/TESTING.md`](./deepseek-harness-go/docs/TESTING.md)（验收矩阵）。
 
 ---
 

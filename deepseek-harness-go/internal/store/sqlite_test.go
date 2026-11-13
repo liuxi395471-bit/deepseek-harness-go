@@ -325,3 +325,55 @@ func TestSQLiteStore_DoubleClose(t *testing.T) {
 	// (Close just calls db.Close; reopening via path would work.)
 }
 
+// 13. updated_at 的时间单位必须是毫秒（回归测试）。
+//
+// 历史 Bug：Append 在写入非 assistant 消息时用了 time.Now().Unix()
+// （**秒**），而 Load/List 都按 UnixMilli（毫秒）解读该列。结果是
+// "只有 user/tool 消息、没有 assistant 消息"的会话 updated_at 变成
+// 1970 纪元时间，前端会把它显示成 1970/1/22 并排到列表最前面。
+//
+// 这里断言：任何 Append 之后，updated_at 都必须落在"当前时间附近"
+// （而不是 1970 年）。
+func TestSQLiteStore_UpdatedAtUsesMilliseconds(t *testing.T) {
+	path := makeTemp(t)
+	s, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	sess, err := s.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 只追加一条 user 消息 —— 这条路径正是原来写 Unix() 的分支。
+	before := time.Now().Add(-2 * time.Second)
+	if err := s.Append(ctx, sess.ID, llm.Message{Role: llm.RoleUser, Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().Add(2 * time.Second)
+
+	loaded, err := s.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.UpdatedAt.Before(before) || loaded.UpdatedAt.After(after) {
+		t.Errorf("UpdatedAt = %v, want within [%v, %v] (单位疑似不是毫秒)",
+			loaded.UpdatedAt, before, after)
+	}
+
+	// List 走的是同一条读取路径，也必须一致。
+	list, err := s.List(ctx, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list len = %d, want 1", len(list))
+	}
+	if list[0].UpdatedAt.Before(before) || list[0].UpdatedAt.After(after) {
+		t.Errorf("List UpdatedAt = %v, want within [%v, %v] (单位疑似不是毫秒)",
+			list[0].UpdatedAt, before, after)
+	}
+}
+

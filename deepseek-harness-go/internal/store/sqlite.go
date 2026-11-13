@@ -16,7 +16,7 @@ import (
 // SQLiteStore 通过纯 Go 的 modernc.org/sqlite 驱动将 会话持久化到单个
 // SQLite 数据库文件。
 //
-// 模式（DESIGN-v2 §A.3.3）：
+// 模式（ARCHITECTURE.md §5）：
 //
 //	CREATE TABLE sessions (
 //	    id TEXT PRIMARY KEY,
@@ -173,8 +173,12 @@ func (s *SQLiteStore) Append(ctx context.Context, id string, msg llm.Message) er
 			return fmt.Errorf("store: append rounds: %w", err)
 		}
 	} else {
+		// updated_at 必须用毫秒：Load/List 都按 UnixMilli 解读该列。
+		// 曾经这里误用 Unix()（秒），导致"只有 user/tool 消息、没有
+		// assistant 消息"的会话 updated_at 变成 1970 纪元时间，前端
+		// 会把这类会话显示成 1970/1/22 并排到列表最前面。
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE sessions SET updated_at=? WHERE id=?`, time.Now().Unix(), id,
+			`UPDATE sessions SET updated_at=? WHERE id=?`, time.Now().UnixMilli(), id,
 		); err != nil {
 			return fmt.Errorf("store: append touch: %w", err)
 		}

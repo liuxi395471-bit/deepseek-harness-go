@@ -1,4 +1,4 @@
-// Package approval 实现危险工具调用的人工确认门（DESIGN-v2 §C.2）。
+// Package approval 实现危险工具调用的人工确认门（ARCHITECTURE.md §7.1）。
 //
 // v2 提供四种 Approver 实现：
 //

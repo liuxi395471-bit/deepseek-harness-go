@@ -1,0 +1,4 @@
+2026/10/26 01:07:46 [dsh] store: sqlite .dsh\workspace\dsh.db
+2026/10/26 01:07:46 [dsh] serve: web console at http://127.0.0.1:8080/
+2026/10/26 01:07:46 [dsh] serve: listening on 127.0.0.1:8080 (model=mock-model)
+2026/10/28 01:10:55 [dsh] serve: shutting down (context canceled)

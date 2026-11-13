@@ -22,7 +22,7 @@ func feedAll(t *testing.T, payload string) []Frame {
 	return frames
 }
 
-// §A.1.6 row 1: 单 frame 多 chunk delta text accumulates into one Content.
+// ARCHITECTURE.md §6 (row 1: 单 frame 多 chunk delta text accumulates into one Content.
 func TestRecombiner_MultiFrameText(t *testing.T) {
 	r := NewRecombiner()
 	r.Append(llm.StreamChunk{Text: "Hello, "})
@@ -35,7 +35,7 @@ func TestRecombiner_MultiFrameText(t *testing.T) {
 	}
 }
 
-// §A.1.6 row 2: empty stream (server closes immediately) — Final returns
+// ARCHITECTURE.md §6 (row 2: empty stream (server closes immediately) — Final returns
 // an empty message without panic.
 func TestRecombiner_EmptyStream(t *testing.T) {
 	r := NewRecombiner()
@@ -47,7 +47,7 @@ func TestRecombiner_EmptyStream(t *testing.T) {
 	}
 }
 
-// §A.1.6 row 3: keep-alive `:ping` comments do not surface as frames.
+// ARCHITECTURE.md §6 (row 3: keep-alive `:ping` comments do not surface as frames.
 func TestParser_IgnoreKeepAlive(t *testing.T) {
 	payload := ": ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
 	frames := feedAll(t, payload)
@@ -60,7 +60,7 @@ func TestParser_IgnoreKeepAlive(t *testing.T) {
 	}
 }
 
-// §A.1.6 row 4: terminal frame carries only finish_reason; chunk is appended.
+// ARCHITECTURE.md §6 (row 4: terminal frame carries only finish_reason; chunk is appended.
 func TestParser_TerminalFinishOnly(t *testing.T) {
 	payload := "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
 	frames := feedAll(t, payload)
@@ -76,7 +76,7 @@ func TestParser_TerminalFinishOnly(t *testing.T) {
 	}
 }
 
-// §A.1.6 row 5: ctx cancel mid-stream closes the channel; partial frames
+// ARCHITECTURE.md §6 (row 5: ctx cancel mid-stream closes the channel; partial frames
 // collected so far are still delivered.
 func TestParser_CtxCancelClosesChannel(t *testing.T) {
 	payload := "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n"
@@ -101,7 +101,7 @@ func TestParser_CtxCancelClosesChannel(t *testing.T) {
 	}
 }
 
-// §A.1.6 row 6: 429 + retry scenario is a higher-level integration test
+// ARCHITECTURE.md §6 (row 6: 429 + retry scenario is a higher-level integration test
 // (covered in T2 with HTTP client). At the stream layer we assert that
 // malformed JSON is silently dropped.
 func TestParser_MalformedFrameDropped(t *testing.T) {
@@ -115,7 +115,7 @@ func TestParser_MalformedFrameDropped(t *testing.T) {
 	}
 }
 
-// §A.1.6 row 7: tool_calls split across three frames reassemble by ID.
+// ARCHITECTURE.md §6 (row 7: tool_calls split across three frames reassemble by ID.
 func TestRecombiner_ToolCallsAcrossFrames(t *testing.T) {
 	r := NewRecombiner()
 	r.Append(llm.StreamChunk{
@@ -158,7 +158,7 @@ func TestRecombiner_ToolCallsAcrossFrames(t *testing.T) {
 	}
 }
 
-// §A.1.6 row 8: not exercised here (server returns 400 on first frame);
+// ARCHITECTURE.md §6 (row 8: not exercised here (server returns 400 on first frame);
 // handled at HTTP client layer in T2.
 func TestRecombiner_AfterFinishedIsIdempotent(t *testing.T) {
 	r := NewRecombiner()

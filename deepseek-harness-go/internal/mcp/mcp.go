@@ -1,5 +1,5 @@
 // Package mcp 实现 MCP（Model Context Protocol）stdio 客户端
-// （DESIGN-v2 SD.1）。
+// （ARCHITECTURE.md §15）。
 //
 // MCP 允许 Cursor AI 代理通过 stdio 连接外部工具。
 // 本包实现客户端一侧：我们充当 MCP 宿主，通过 stdin/stdout

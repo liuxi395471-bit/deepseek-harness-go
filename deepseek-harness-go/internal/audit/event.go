@@ -1,12 +1,12 @@
-// Package audit 实现 DESIGN-v3 §E：JSONL 审计日志。
+// Package audit 实现 ARCHITECTURE.md §11：JSONL 审计日志。
 //
 // 每行一个事件：{ts, session_id, event, ...}。默认 redact 模式下
-// args 只记 SHA-256 hash；audit.full=true 才记录原文（§E.2）。
+// args 只记 SHA-256 hash；audit.full=true 才记录原文（ARCHITECTURE.md §11）。
 package audit
 
 import "time"
 
-// 事件类型常量（§E.1）。
+// 事件类型常量（ARCHITECTURE.md §11）。
 const (
 	EventToolCall        = "tool_call"
 	EventApprovalDecision = "approval_decision"

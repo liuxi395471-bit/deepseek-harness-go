@@ -207,7 +207,7 @@ func TestSpawnToolErrorsAreToolResults(t *testing.T) {
 	})
 	t2 := NewSpawnTool(panicky)
 	// SpawnTool.Execute 不含 recover（panic 由 runner 的 safeExecute 兜底，
-	// 这正是 §B.3 "子 agent panic → 父 tool_result is_error=true" 的路径）。
+	// 这正是 ARCHITECTURE.md §8 "子 agent panic → 父 tool_result is_error=true" 的路径）。
 	defer func() {
 		if x := recover(); x == nil {
 			t.Fatal("expected panic to propagate to runner's safeExecute")

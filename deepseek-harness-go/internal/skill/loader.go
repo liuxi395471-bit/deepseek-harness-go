@@ -17,7 +17,7 @@ func NewFileLoader() *FileLoader { return &FileLoader{} }
 
 // Load 读取 dir 下所有 *.md 文件并解析 frontmatter。
 //
-// 行为约定（§A.5）：
+// 行为约定（ARCHITECTURE.md §9）：
 //   - 目录不存在 → 返回空列表，不报错
 //   - frontmatter 缺 name 等必需字段 → 报错（不静默）
 //   - Body = frontmatter 的 body 字段（若有）+ 文件 frontmatter 之后的正文

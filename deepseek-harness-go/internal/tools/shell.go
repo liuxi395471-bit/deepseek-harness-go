@@ -31,7 +31,7 @@ type ShellConfig struct {
 
 // ShellTool 在 harness 的策略约束下安全地执行操作系统命令。
 //
-// 策略（DESIGN-v2 §C.3）：
+// 策略（ARCHITECTURE.md §7）：
 //
 //  1. 只有第一个参数（命令名）会与 AllowList 匹配。
 //  2. 每个路径参数都相对于 WorkspaceRoot 解析；目录穿越尝试
@@ -42,7 +42,7 @@ type ShellConfig struct {
 type ShellTool struct {
 	cfg      ShellConfig
 	approver approval.Approver
-	// Sandbox 是 v3 §F 的 OS 沙箱（可选）。nil 等价 NoopSandbox，
+	// Sandbox 是 ARCHITECTURE.md §12 的 OS 沙箱（可选）。nil 等价 NoopSandbox，
 	// 与 v2 行为一致。
 	Sandbox sandbox.Sandbox
 }
@@ -143,7 +143,7 @@ func (s *ShellTool) Execute(ctx context.Context, raw json.RawMessage) (tool.Resu
 	// 以避免泄露机密信息。
 	cmd.Env = minimalEnv()
 
-	// v3 §F.4：执行前应用 OS 沙箱。Apply 失败以 IsError 呈现，
+	// v3 ARCHITECTURE.md §12：执行前应用 OS 沙箱。Apply 失败以 IsError 呈现，
 	// 绝不静默降级为无沙箱执行。
 	sb := s.Sandbox
 	if sb == nil {

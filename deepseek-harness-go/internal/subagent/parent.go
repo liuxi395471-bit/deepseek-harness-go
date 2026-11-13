@@ -11,7 +11,7 @@ import (
 	"deepseek-harness-go/internal/tool"
 )
 
-// SpawnTool 是暴露给 LLM 的内置工具 agent_spawn（§B.1）。
+// SpawnTool 是暴露给 LLM 的内置工具 agent_spawn（ARCHITECTURE.md §8）。
 type SpawnTool struct {
 	Spawner Spawner
 }
@@ -43,7 +43,7 @@ type spawnArgs struct {
 	Prompt string `json:"prompt"`
 }
 
-// Execute 实现 tool.Tool：同步执行子 agent（§B.3 验收点全部落在这里）。
+// Execute 实现 tool.Tool：同步执行子 agent（ARCHITECTURE.md §8 验收点全部落在这里）。
 func (t *SpawnTool) Execute(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
 	var a spawnArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
@@ -65,7 +65,7 @@ func (t *SpawnTool) Execute(ctx context.Context, raw json.RawMessage) (tool.Resu
 	return res.ToToolResult(), nil
 }
 
-// SubRunner 持有父 runner 与子 runner（§B.2）。
+// SubRunner 持有父 runner 与子 runner（ARCHITECTURE.md §8）。
 type SubRunner struct {
 	Parent *agent.LoopRunner
 	Child  *agent.LoopRunner
@@ -78,13 +78,13 @@ var _ Spawner = (*SubRunner)(nil)
 // 便于测试与审计）。
 func (s *SubRunner) SpawnResult(ctx context.Context, prompt string) SubResult {
 	events, resCh := s.Child.RunStream(ctx, prompt, "")
-	// 排空事件流：子 agent 的中间事件对父 runner 不可见（§B.1），
+	// 排空事件流：子 agent 的中间事件对父 runner 不可见（ARCHITECTURE.md §8），
 	// 但必须消费完以防子 runner 阻塞。
 	for range events {
 	}
 	res := <-resCh
 	if res.Error != nil {
-		// deadline exceeded 与 canceled 都按 canceled 归类（§B.3：
+		// deadline exceeded 与 canceled 都按 canceled 归类（ARCHITECTURE.md §8：
 		// 超时 → is_error, msg=canceled）。
 		if errors.Is(res.Error, context.Canceled) || errors.Is(res.Error, context.DeadlineExceeded) {
 			return SubResult{StopReason: "canceled", Err: context.Canceled}
@@ -110,7 +110,7 @@ func (s *SubRunner) Spawn(ctx context.Context, prompt string) (string, error) {
 	return res.Text, nil
 }
 
-// NewSync 构造同步子 agent（§B.2）。
+// NewSync 构造同步子 agent（ARCHITECTURE.md §8）。
 //
 // child 共享 parent 的 LLM client；工具注册表为 reg 的副本但剔除
 // agent_spawn 自身，从而在结构上禁止嵌套（max_depth=1 的第一道

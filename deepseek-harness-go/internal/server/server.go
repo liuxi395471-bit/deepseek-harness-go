@@ -1,4 +1,4 @@
-// Package server 实现 agent runner 的 HTTP+SSE 接口（DESIGN-v2 §A.2）。
+// Package server 实现 agent runner 的 HTTP+SSE 接口（ARCHITECTURE.md §13）。
 //
 // 端点：
 //
@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"deepseek-harness-go/internal/agent"
 	"deepseek-harness-go/internal/store"
@@ -47,6 +48,10 @@ type Server struct {
 	sessMu  sync.Mutex
 	sessRun map[string]struct{}
 
+	// ui 是可选的前端静态资源 handler（internal/webui 提供）。
+	// 非 nil 时，根路径下的请求会被转发给它（用于 SPA）。
+	ui http.Handler
+
 	httpServer *http.Server
 }
 
@@ -62,6 +67,24 @@ func New(cfg Config, runner agent.StreamingRunner, st store.Store) *Server {
 
 // ErrConcurrentSession 在会话已被另一个请求占用时由 acquire 返回。
 var ErrConcurrentSession = errors.New("server: session in use")
+
+// isPublicPath 判断路径是否免鉴权。
+//
+//   - /healthz：健康检查，任何人都可以访问（探针需要）。
+//   - 前端静态资源：浏览器加载 index.html 时无法携带自定义请求头，
+//     因此必须放行；页面本身不含敏感数据，真正的数据仍由受保护的
+//     /api/* 提供。
+//
+// 注意：/api/* 一律**不**放行。
+func (s *Server) isPublicPath(p string) bool {
+	if p == "/healthz" {
+		return true
+	}
+	if s.ui != nil && !strings.HasPrefix(p, "/api/") {
+		return true
+	}
+	return false
+}
 
 // acquire 将 session id 标记为使用中。若其上已有另一个请求在运行，
 // 则返回 ErrConcurrentSession。
@@ -82,6 +105,15 @@ func (s *Server) release(id string) {
 	delete(s.sessRun, id)
 }
 
+// SetUI 设置前端静态资源 handler。
+//
+// 该 handler 收到的请求**不要求** Bearer token（前端页面本身不含
+// 敏感数据），但 API 路径仍由 bearerAuth 保护。传入 nil 表示不启用
+// 前端（纯 API 模式）。
+func (s *Server) SetUI(h http.Handler) {
+	s.ui = h
+}
+
 // Handler 返回配置好的 HTTP handler。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -90,13 +122,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/agent/stream", s.handleStream)
 	mux.HandleFunc("/api/sessions", s.handleListSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSession)
+
+	// 前端 SPA 挂在根路径 "/"。注册在具体路径之后，
+	// 因此 /healthz 与 /api/* 仍命中上面注册的 handler。
+	if s.ui != nil {
+		mux.Handle("/", s.ui)
+	}
+
 	return s.bearerAuth(mux)
 }
 
-// bearerAuth 为 next 包装 Bearer token 校验。/healthz 例外放行。
+// bearerAuth 为 next 包装 Bearer token 校验。
+//
+// 例外放行：/healthz（健康检查）与前端静态资源（不含敏感数据，
+// 否则浏览器加载 index.html 时无法携带自定义请求头）。
 func (s *Server) bearerAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if s.isPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -186,6 +228,16 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "prompt required", http.StatusBadRequest)
 		return
 	}
+	// 与 /api/agent/stream 一样，对同一 session id 做互斥：并发请求
+	// 返回 409。否则两个 RunStream 会同时往同一个会话里追加消息，
+	// 造成历史交错、usage 重复累加。
+	if req.SessionID != "" {
+		if err := s.acquire(req.SessionID); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		defer s.release(req.SessionID)
+	}
 	ctx := r.Context()
 	if s.cfg.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -256,16 +308,55 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		_ = recover() // 工具 panic 安全兜底
 	}()
 	events, result := s.runner.RunStream(ctx, prompt, sid)
+	// 记录是否已经转发过 loop_error：runner 在某些早退路径（如加载
+	// 会话失败）只设置 RunResult.Error 而**不**发 LoopError 事件，
+	// 而在 LLM 调用失败路径又会发 LoopError。这里做去重，保证客户端
+	// 最多收到一条 loop_error。
+	sawLoopError := false
 	for ev := range events {
+		// runner 的 LoopDone 事件不直接转发：它只带 rounds/stop_reason，
+		// 缺少 session_id 与 usage。下面统一在拿到 RunResult 后发一个
+		// 信息完整的 loop_done 帧，避免客户端收到两个语义重复的终止帧。
+		if _, isDone := ev.(agent.LoopDone); isDone {
+			continue
+		}
+		if _, isErr := ev.(agent.LoopError); isErr {
+			sawLoopError = true
+		}
 		writeSSE(w, flusher, eventToFrame(ev))
 	}
 	res := <-result
-	// 发送终止的 usage + loop_done 帧
+
+	// runner 早退（未发 LoopError 事件）时，用 RunResult.Error 补一条
+	// loop_error。否则前端只会看到 stop_reason="error"，却拿不到任何
+	// 错误原因 —— 表现为"什么都没发生就结束了"。
+	if res.Error != nil && !sawLoopError {
+		writeSSE(w, flusher, sseFrame{
+			Event: "loop_error",
+			Data:  mustJSON(map[string]any{"err": res.Error.Error(), "phase": "error"}),
+		})
+	}
+
+	// 发送终止的 usage + loop_done 帧。
+	// session_id 必须带上：新建会话时（sid 为空）前端只有从这里才能
+	// 拿到 id，后续轮次才能继续同一个会话。
+	// error 字段在运行失败时携带原因（成功时为空串）。
+	errMsg := ""
+	if res.Error != nil {
+		errMsg = res.Error.Error()
+	}
 	writeSSE(w, flusher, sseFrame{
 		Event: "loop_done",
 		Data: mustJSON(map[string]any{
 			"rounds":      res.Rounds,
 			"stop_reason": res.StopReason,
+			"session_id":  res.SessionID,
+			"error":       errMsg,
+			"usage": map[string]any{
+				"prompt_tokens":     res.Usage.PromptTokens,
+				"completion_tokens": res.Usage.CompletionTokens,
+				"total_tokens":      res.Usage.TotalTokens,
+			},
 		}),
 	})
 }
@@ -329,5 +420,20 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, sess)
+	// 显式映射为 snake_case：直接序列化 store.Session 会输出 Go 的
+	// 字段名（ID / CreatedAt / Messages…），与 /api/sessions 的
+	// snake_case 契约不一致，会让客户端需要写两套解析逻辑。
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":         sess.ID,
+		"created_at": sess.CreatedAt.UTC().Format(time.RFC3339),
+		"updated_at": sess.UpdatedAt.UTC().Format(time.RFC3339),
+		"rounds":     sess.Rounds,
+		"preview":    sess.Preview,
+		"messages":   sess.Messages,
+		"usage": map[string]any{
+			"prompt_tokens":     sess.UsageTotal.PromptTokens,
+			"completion_tokens": sess.UsageTotal.CompletionTokens,
+			"total_tokens":      sess.UsageTotal.TotalTokens,
+		},
+	})
 }

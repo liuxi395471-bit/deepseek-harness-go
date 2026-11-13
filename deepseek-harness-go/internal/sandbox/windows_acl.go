@@ -1,6 +1,6 @@
 //go:build windows
 
-// Windows ACL sandbox（DESIGN-v3 §F.2）。
+// Windows ACL sandbox（ARCHITECTURE.md §12）。
 //
 // Apply 做两件事：
 //  1. 用 advapi32!CreateRestrictedToken 从当前进程主令牌派生一个

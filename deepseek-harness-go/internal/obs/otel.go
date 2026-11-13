@@ -15,7 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// OTelConfig 是 obs.provider=otel 时的设置（§C.4）。
+// OTelConfig 是 obs.provider=otel 时的设置（ARCHITECTURE.md §11）。
 type OTelConfig struct {
 	Endpoint    string  // OTLP gRPC endpoint，例如 localhost:4317
 	ServiceName string  // resource.service.name
@@ -36,7 +36,7 @@ type OTelTracerHandle struct {
 // 调用方应通过 obs.Provider.M() 间接使用；本方法仅用于直测。
 func (h *OTelTracerHandle) Meter() Meter { return h.m }
 
-// NewOTelTracer 初始化 OTel Tracer + Meter provider（§C.2）。
+// NewOTelTracer 初始化 OTel Tracer + Meter provider（ARCHITECTURE.md §11）。
 // 进程退出前应调用 Close flush。
 func NewOTelTracer(ctx context.Context, cfg OTelConfig) (*OTelTracerHandle, error) {
 	if cfg.Endpoint == "" {

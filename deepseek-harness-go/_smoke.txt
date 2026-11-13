@@ -1,0 +1,71 @@
+﻿=== dsh serve integration smoke ===
+base=http://127.0.0.1:8080
+
+[1] healthz / auth
+  [PASS] GET /healthz -> 200
+  [PASS] healthz body has ok=true
+  [PASS] GET /api/sessions without token -> 401
+
+[2] POST /api/agent/message
+  [PASS] POST /api/agent/message -> 200
+  [PASS] message resp has session_id
+  [PASS] message resp has messages
+  [PASS] message resp has usage
+  [PASS] message resp has stop_reason
+  [PASS] message resp has rounds
+  [PASS] usage has prompt/completion/total tokens
+        session_id=85bb076c2e74b2a80220858748f26216
+
+[3] GET /api/sessions/{id}
+  [PASS] GET session detail -> 200
+  [PASS] session detail has key 'id'
+  [PASS] session detail has key 'created_at'
+  [PASS] session detail has key 'updated_at'
+  [PASS] session detail has key 'rounds'
+  [PASS] session detail has key 'preview'
+  [PASS] session detail has key 'messages'
+  [PASS] session detail has key 'usage'
+  [PASS] session detail id matches
+  [PASS] updated_at is a recent RFC3339 timestamp
+
+[4] GET /api/sessions
+  [PASS] GET /api/sessions -> 200
+  [PASS] sessions list is valid JSON
+  [PASS] sessions list contains the new session
+
+[5] GET /api/agent/stream (SSE)
+  [PASS] SSE -> 200
+  [PASS] SSE Content-Type is text/event-stream
+        event order: [phase_change phase_change assistant_delta assistant_delta assistant_delta assistant_delta assistant_delta assistant_message loop_done]
+  [PASS] SSE emits 'assistant_delta'
+  [PASS] SSE emits 'loop_done'
+  [PASS] SSE payload contains streamed text
+  [PASS] SSE loop_done contains session_id
+  [PASS] SSE loop_done contains usage
+
+[6] tool call round-trip
+  [PASS] POST tool-call message -> 200
+  [PASS] assistant message carries tool_calls
+  [PASS] conversation includes role=tool result
+  [PASS] rounds >= 2 for a tool call (got 2)
+
+[7] concurrency guard (same session -> 409)
+  [PASS] both concurrent requests returned
+  [FAIL] one of the concurrent requests gets 409 :: codes=[500 500]
+
+[8] unknown session id
+  [PASS] unknown session -> 4xx/5xx
+
+[9] SPA static assets
+  [PASS] GET / -> 200
+  [PASS] index.html mounts the Vue app
+  [PASS] index.html references hashed assets
+
+=== summary: 39 passed, 1 failed ===
+go : exit status 1
+所在位置 C:\Users\29193\AppData\Local\Temp\ps-script-881e9981-9857-4a35-822e-1741a4da058f.ps1:106 字符: 1
++ go run ./tools/smoke -base http://127.0.0.1:8080 -token test-token-12 ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (exit status 1:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

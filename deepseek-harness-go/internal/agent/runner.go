@@ -14,6 +14,8 @@ import (
 	"deepseek-harness-go/internal/obs"
 	"deepseek-harness-go/internal/skill"
 	"deepseek-harness-go/internal/store"
+	// 别名：函数参数 stream（bool）会遮蔽同名的包名。
+	streampkg "deepseek-harness-go/internal/stream"
 	"deepseek-harness-go/internal/tool"
 )
 
@@ -50,7 +52,7 @@ type Runner interface {
 // 仍然在该轮末尾发出，因此只识别 AssistantMessage 的现有订阅者
 // 仍可继续工作。
 //
-// sid 语义（DESIGN-v2 §A.3.4）：
+// sid 语义（ARCHITECTURE.md §5）：
 //
 //   - sid == "" 且 Store == nil：不持久化；v1 旧路径。
 //   - sid == "" 且 Store != nil：开新会话；分配 sid。
@@ -89,23 +91,23 @@ type LoopRunner struct {
 
 	Store store.Store // v2: optional. When nil, no persistence.
 
-	// ---- v3 可选接入点（零值 = 关闭，行为与 v2 一致）----
+	// ---- 可选接入点（零值 = 关闭，行为与未接入时一致）----
 
-	// Skills 是候选 skill 集合（§A.4）。每轮用户 prompt 到达时经
+	// Skills 是候选 skill 集合（ARCHITECTURE.md §9）。每轮用户 prompt 到达时经
 	// Matcher 匹配，命中的 body 注入 system prompt。
 	Skills []skill.Skill
 	// Matcher 决定触发逻辑；nil 时用 skill.KeywordMatcher。
 	Matcher skill.Matcher
-	// Compactor 非 nil 时在每轮 LLM 调用前检查上下文长度（§D）。
+	// Compactor 非 nil 时在每轮 LLM 调用前检查上下文长度（ARCHITECTURE.md §10）。
 	Compactor *compaction.Compactor
-	// Audit 非 nil 时记录 tool_call / llm_call 事件（§E）。
+	// Audit 非 nil 时记录 tool_call / llm_call 事件（ARCHITECTURE.md §11）。
 	Audit audit.Logger
-	// Obs 注入可观测实现（§C）；零值 = 全 no-op。
+	// Obs 注入可观测实现（ARCHITECTURE.md §11）；零值 = 全 no-op。
 	Obs obs.Provider
 
 	// baseSystem 在 run() 启动时被快照 System.Build(Registry) 的结果，
 	// 用于每次重注入 skill 前重置 msgs[0].Content，保证 skill body
-	// 不会因反复 inject 而累积（§A.4：loop 每轮都应重新评估）。
+	// 不会因反复 inject 而累积（ARCHITECTURE.md §9：loop 每轮都应重新评估）。
 	baseSystem string
 
 	bufSize int
@@ -134,7 +136,7 @@ func NewLoopRunner(c llm.Client, reg *tool.Registry, sys SystemPromptBuilder, mo
 // 两个通道都由运行器负责关闭。
 //
 // 旧版 2 参数形式不会启用会话持久化；如需启用，请向 RunStream 传入
-// 非空的 sid（DESIGN-v2 §A.3.4）。
+// 非空的 sid（ARCHITECTURE.md §5）。
 func (r *LoopRunner) Run(ctx context.Context, prompt string) (<-chan Event, <-chan RunResult) {
 	out := make(chan Event, r.bufSize)
 	res := make(chan RunResult, 1)
@@ -173,7 +175,7 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 	rounds := 0
 	var totalUsage llm.Usage
 
-	// v3 §C.3：整个 run 包在 "agent.run" span 中。
+	// v3 ARCHITECTURE.md §3：整个 run 包在 "agent.run" span 中。
 	runCtx, runSpan := r.Obs.T().Start(ctx, "agent.run")
 	runSpan.SetAttr("agent.model", r.Model)
 	runSpan.SetAttr("agent.stream", stream)
@@ -250,7 +252,7 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 	}
 
 	// 记录 baseSystem：每轮 skill 注入前会用此值重置 msgs[0].Content，
-	// 防止前一轮注入的 body 残留与新一轮叠加（§A.4）。
+	// 防止前一轮注入的 body 残留与新一轮叠加（ARCHITECTURE.md §9）。
 	// 恢复模式下 store 里的 system 与当前 Registry 推导的 base 不一定
 	// 一致（工具注册表可能变化），用 base 覆盖保证语义统一。
 	r.baseSystem = r.System.Build(r.Registry)
@@ -264,7 +266,7 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 	if prompt != "" {
 		userMsg := llm.Message{Role: llm.RoleUser, Content: prompt}
 		msgs = append(msgs, userMsg)
-		// v3 §A.4：skill 注入。命中的 body 拼接到 system prompt 尾部。
+		// v3 ARCHITECTURE.md §9：skill 注入。命中的 body 拼接到 system prompt 尾部。
 		// 只改内存副本，不回写 Store——注入是运行时行为。
 		r.injectSkills(msgs, prompt)
 		if r.Store != nil && sid != "" {
@@ -303,7 +305,7 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 		case out <- PhaseChange{Phase: PhaseLLMCall, At: time.Now()}:
 		}
 
-		// v3 §D：每轮 LLM 调用前检查上下文长度；超阈值则压缩。
+		// ARCHITECTURE.md §10：每轮 LLM 调用前检查上下文长度；超阈值则压缩。
 		// 压缩结果只影响发送给 LLM 的消息序列，Store 不动。
 		if r.Compactor != nil {
 			compacted, did, cerr := r.Compactor.Maybe(ctx, msgs)
@@ -318,7 +320,7 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 			}
 		}
 
-		// v3 §A.4：每轮按当前 user prompt 重新评估 skill 注入。
+		// v3 ARCHITECTURE.md §9：每轮按当前 user prompt 重新评估 skill 注入。
 		// injectSkills 内部会用 r.baseSystem 重置 msgs[0]，避免累积。
 		if lastPrompt := lastUserContent(msgs); lastPrompt != "" {
 			r.injectSkills(msgs, lastPrompt)
@@ -349,7 +351,7 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 		totalUsage.PromptTokens += usage.PromptTokens
 		totalUsage.CompletionTokens += usage.CompletionTokens
 		totalUsage.TotalTokens += usage.TotalTokens
-		// v3 §E：llm_call 审计 + §C.3 span 属性。
+		// ARCHITECTURE.md §11：llm_call 审计 + ARCHITECTURE.md §3 span 属性。
 		r.auditLog(ctx, audit.Event{
 			SessionID:        sid,
 			Event:            audit.EventLLMCall,
@@ -407,7 +409,7 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 			start := time.Now()
 			toolCtx, toolSpan := r.Obs.T().Start(ctx, "tool.execute")
 			toolSpan.SetAttr("tool.name", tc.Function.Name)
-			// v3 §E：tool_call 审计。FileLogger 按 redact 配置决定
+			// ARCHITECTURE.md §11：tool_call 审计。FileLogger 按 redact 配置决定
 			// 保留 hash 还是原文。
 			r.auditLog(ctx, audit.Event{
 				SessionID: sid,
@@ -465,7 +467,7 @@ func (r *LoopRunner) run(ctx context.Context, prompt string, sid string, out cha
 // （调用方应将其归类为致命错误）。
 // 第二个返回值是本轮模型上报的 Usage（后端未上报时为零值）。
 //
-// v3 §C.3：整轮调用包在 "llm.chat" span 中，结束前记录 model 与
+// v3 ARCHITECTURE.md §3：整轮调用包在 "llm.chat" span 中，结束前记录 model 与
 // token 属性。
 //
 // 并发性：必须与 run() 在同一 goroutine 中执行（它会写 out）。
@@ -522,6 +524,10 @@ func (r *LoopRunner) doOneRound(ctx context.Context, msgs []llm.Message, out cha
 		finish    string
 		seenAny   bool
 	)
+	// Recombiner 按 tool_call 的 ID 合并分片：OpenAI 协议会把一次
+	// 工具调用的 name / arguments 拆到多个 SSE 帧里，直接 append
+	// 会产生重复的工具调用。
+	recombiner := streampkg.NewRecombiner()
 	for chunk := range ch {
 		seenAny = true
 		if chunk.Text != "" {
@@ -532,9 +538,7 @@ func (r *LoopRunner) doOneRound(ctx context.Context, msgs []llm.Message, out cha
 			case out <- AssistantDelta{Text: chunk.Text}:
 			}
 		}
-		for _, tc := range chunk.ToolCalls {
-			toolCalls = append(toolCalls, tc)
-		}
+		recombiner.Append(chunk)
 		if chunk.Finish != "" {
 			finish = chunk.Finish
 		}
@@ -542,6 +546,7 @@ func (r *LoopRunner) doOneRound(ctx context.Context, msgs []llm.Message, out cha
 			usage = *chunk.Usage
 		}
 	}
+	toolCalls = recombiner.Final().ToolCalls
 	<-errDone
 	if streamErr != nil {
 		return llm.Message{}, llm.Usage{}, false, streamErr
@@ -576,7 +581,7 @@ func (r *LoopRunner) persistAppend(ctx context.Context, sid string, msg llm.Mess
 // RunStream 是 Run 的流式对应方法。它始终使用 Client.ChatStream，
 // 不受 Stream 开关影响，并在模型生成过程中发出 AssistantDelta。
 //
-// sid 语义（DESIGN-v2 §A.3.4）：
+// sid 语义（ARCHITECTURE.md §5）：
 //
 //   - sid == "" 且 Store == nil：v1 旧路径；不持久化。
 //   - sid == "" 且 Store != nil：开新会话；分配 sid；持久化用户消息（prompt）
@@ -603,7 +608,7 @@ func safeExecute(t tool.Tool, ctx context.Context, args json.RawMessage) (result
 	return t.Execute(ctx, args)
 }
 
-// injectSkills 按 §A.4 把命中的 skill body 注入 msgs[0]（system）。
+// injectSkills 按 ARCHITECTURE.md §9 把命中的 skill body 注入 msgs[0]（system）。
 // msgs 为空或首条不是 system 时静默跳过。
 //
 // 行为约定：每次注入前先把 msgs[0].Content 重置为 r.baseSystem

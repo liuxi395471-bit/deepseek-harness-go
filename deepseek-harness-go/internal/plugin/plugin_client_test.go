@@ -1,4 +1,4 @@
-// gRPC 插件客户端的测试（DESIGN-v2 §B.2）。
+// gRPC 插件客户端的测试（ARCHITECTURE.md §14）。
 //
 // 策略：在一个 goroutine 中于随机的 localhost 端口上启动进程内的
 // plugin.Server，然后让 plugin.Client 拨号连接。这避免了在测试
@@ -21,7 +21,7 @@ import (
 	"deepseek-harness-go/internal/tool"
 )
 
-// echoTool 镜像 cmd/plugin-echo 的工具，使测试无需派生子进程。
+// echoTool 是一个最小插件工具，使测试无需派生子进程。
 type echoTool struct{ text string }
 
 func (e *echoTool) Name() string        { return "echo" }

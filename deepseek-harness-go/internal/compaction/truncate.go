@@ -8,7 +8,7 @@ import (
 )
 
 // TruncateStrategy 保留 system + 最近 N 条，在丢弃区间插入 summary
-// placeholder，让 LLM 知道上下文被压缩（§D.2）。
+// placeholder，让 LLM 知道上下文被压缩（ARCHITECTURE.md §10）。
 type TruncateStrategy struct {
 	KeepRecent int
 }
@@ -34,7 +34,7 @@ func truncate(_ context.Context, msgs []llm.Message, target, keepRecent int) ([]
 	}
 	head := 0
 	if msgs[0].Role == llm.RoleSystem {
-		head = 1 // system 永远保留（§D.5）
+		head = 1 // system 永远保留（ARCHITECTURE.md §10）
 	}
 	keep := keepRecent
 	if keep <= 0 {

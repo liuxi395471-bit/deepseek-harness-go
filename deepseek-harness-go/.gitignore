@@ -20,3 +20,29 @@ Thumbs.db
 .dshdbg-workspace/
 .dshtest-workspace/
 .dsh-debug-workspace/
+
+# Web console (frontend)
+# node_modules 体积大，不入库。
+web/node_modules/
+# 前端构建产物由 `npm run build` 生成并通过 go:embed 内嵌，
+# 不入库（避免每次改前端都要提交产物）。
+#
+# 注意两个不同的 dist 目录：
+#   - internal/webui/dist 是 go:embed 的嵌入源（构建输出目录）。
+#   - web/dist 是更早期前端版本的遗留产物（base=/console，
+#     含 Approvals/Models/Tasks 等已不存在的视图）。当前 vite 配置
+#     的 outDir 指向 internal/webui/dist，web/dist 不会被重新生成，
+#     属于陈旧产物 —— 不入库。
+web/dist/
+internal/webui/dist/*
+# 必须保留一个占位文件：git 不跟踪空目录，fresh clone 时
+# internal/webui/dist 会消失，go:embed 会因 "contains no embeddable
+# files" 直接编译失败。（all: 前缀会把它一起嵌入。）
+!internal/webui/dist/.gitkeep
+
+# 本地联调用配置与产物
+harness.test.yml
+bin/
+
+# 桌面端打包产物与运行时数据（dsh-desktop.exe 等）
+desktop/

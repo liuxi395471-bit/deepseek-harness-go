@@ -1,8 +1,8 @@
-// Package obs 是 harness 的统一可观测性接缝（DESIGN-v3 §C）。
+// Package obs 是 harness 的统一可观测性接缝（ARCHITECTURE.md §11）。
 //
 // v3 将 v2 的 no-op Logger 升级为完整的 Logger / Tracer / Span / Meter
 // 接口族；默认实现全部为 no-op，零外部依赖。当配置 obs.provider=otel
-// 时（§C.2），由 otel.go 提供 OTel SDK 实现（opt-in）。
+// 时（ARCHITECTURE.md §11），由 otel.go 提供 OTel SDK 实现（opt-in）。
 package obs
 
 import "context"
@@ -36,7 +36,7 @@ type Span interface {
 	RecordError(err error)
 }
 
-// Meter 是指标工厂（§C.1）。
+// Meter 是指标工厂（ARCHITECTURE.md §11）。
 type Meter interface {
 	Counter(name string) Counter
 	Histogram(name string) Histogram

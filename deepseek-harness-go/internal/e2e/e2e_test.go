@@ -1,5 +1,5 @@
 // Package e2e 针对内存 mock LLM 测试完整的 v2 技术栈：store + agent
-// 流式 + REPL 斜杠命令。它作为 v2 里程碑的权威冒烟测试（DESIGN-v2 §A.8）。
+// 流式 + REPL 斜杠命令。它作为 v2 里程碑的权威冒烟测试（ARCHITECTURE.md §3）。
 package e2e
 
 import (

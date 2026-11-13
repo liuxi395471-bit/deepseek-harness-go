@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Logger 是审计写入契约（§E.3）。
+// Logger 是审计写入契约（ARCHITECTURE.md §11）。
 type Logger interface {
 	Log(ctx context.Context, ev Event)
 	Close() error
@@ -26,7 +26,7 @@ func HashArgs(raw []byte) string {
 
 // FileLogger 把事件按 JSONL 追加到文件。
 // 并发安全：内部互斥锁串行化写入（多 session 并发时 session_id
-// 各自带在 Event 上，见 §E.5）。
+// 各自带在 Event 上，见 ARCHITECTURE.md §11）。
 type FileLogger struct {
 	mu     sync.Mutex
 	w      io.WriteCloser

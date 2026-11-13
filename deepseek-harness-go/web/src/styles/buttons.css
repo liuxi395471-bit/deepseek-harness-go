@@ -1,0 +1,22 @@
+/**
+ * 全局共享的按钮样式。
+ *
+ * 这些类被多个组件使用，因此放在全局而非 scoped 样式里。
+ */
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: background var(--transition), color var(--transition);
+}
+
+.icon-btn--ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}

@@ -1,7 +1,7 @@
-// Package skill 实现 DESIGN-v3 §A：Markdown + YAML frontmatter 形式的
+// Package skill 实现 ARCHITECTURE.md §9：Markdown + YAML frontmatter 形式的
 // skill 文件，经 mention 或 always-on 触发后注入 system prompt。
 //
-// 文件格式（§A.1）：`---` 包裹的 YAML frontmatter（name/description/
+// 文件格式（ARCHITECTURE.md §6）：`---` 包裹的 YAML frontmatter（name/description/
 // trigger/always），frontmatter 之后的正文即 Body。
 package skill
 

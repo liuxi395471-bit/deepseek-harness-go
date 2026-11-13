@@ -297,3 +297,114 @@ var (
 	_ = bytes.NewReader
 	_ = tool.NewRegistry
 )
+
+// ---- 回归测试（联调发现的问题）----
+
+// errorRunner 模拟 runner 早退：只设置 RunResult.Error，**不**发
+// LoopError 事件。
+//
+// 这正是 internal/agent 在加载会话失败（store: session not found）
+// 时的行为：RunResult.Error 被设置，但事件通道里没有任何 LoopError。
+// 如果服务端不补发 loop_error，客户端只会看到 stop_reason="error"
+// 却拿不到任何原因 —— 表现为"什么都没发生就结束了"。
+type errorRunner struct {
+	err error
+}
+
+func (r errorRunner) RunStream(ctx context.Context, prompt, sid string) (<-chan agent.Event, <-chan agent.RunResult) {
+	ev := make(chan agent.Event)
+	res := make(chan agent.RunResult, 1)
+	close(ev)
+	res <- agent.RunResult{StopReason: "error", Error: r.err, SessionID: sid}
+	close(res)
+	return ev, res
+}
+
+// TestServer_Stream_EmitsLoopErrorOnRunnerError 断言 runner 早退
+// （无 LoopError 事件）时，服务端补发一条 loop_error 帧，并让
+// loop_done 带上 error 字段。
+func TestServer_Stream_EmitsLoopErrorOnRunnerError(t *testing.T) {
+	srv := newServer(t, errorRunner{err: errors.New("runner: load session: store: session not found")}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agent/stream?prompt=hi&session_id=nope", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := do(t, srv, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: loop_error") {
+		t.Errorf("missing loop_error frame:\n%s", body)
+	}
+	if !strings.Contains(body, "session not found") {
+		t.Errorf("loop_error missing error detail:\n%s", body)
+	}
+	// loop_done 必须带 error 字段，让客户端能在 stop_reason=error 时
+	// 拿到失败原因。
+	if !strings.Contains(body, `"error":`) {
+		t.Errorf("loop_done missing error field:\n%s", body)
+	}
+	// 只应有一条 loop_error（去重逻辑）。
+	if n := strings.Count(body, "event: loop_error"); n != 1 {
+		t.Errorf("loop_error frames = %d, want exactly 1:\n%s", n, body)
+	}
+}
+
+// TestServer_Stream_NoDuplicateLoopError 断言 runner 已经发过 LoopError
+// 时，服务端不会重复补发第二条。
+func TestServer_Stream_NoDuplicateLoopError(t *testing.T) {
+	srv := newServer(t, errorEventRunner{}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agent/stream?prompt=hi", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := do(t, srv, req)
+
+	body := rec.Body.String()
+	if n := strings.Count(body, "event: loop_error"); n != 1 {
+		t.Errorf("loop_error frames = %d, want exactly 1:\n%s", n, body)
+	}
+}
+
+// errorEventRunner 发一条 LoopError 事件（模拟 LLM 调用失败路径）。
+type errorEventRunner struct{}
+
+func (errorEventRunner) RunStream(ctx context.Context, prompt, sid string) (<-chan agent.Event, <-chan agent.RunResult) {
+	ev := make(chan agent.Event, 1)
+	res := make(chan agent.RunResult, 1)
+	ev <- agent.LoopError{Err: errors.New("llm boom"), Phase: agent.PhaseLLMCall}
+	close(ev)
+	res <- agent.RunResult{StopReason: "error", Error: errors.New("llm boom"), SessionID: sid}
+	close(res)
+	return ev, res
+}
+
+// TestServer_Message_ConcurrentSameSession_409 断言 POST
+// /api/agent/message 与 SSE 端点一样，对同一 session id 做互斥。
+//
+// 否则两个 RunStream 会同时往同一会话追加消息，历史交错、
+// usage 重复累加。
+func TestServer_Message_ConcurrentSameSession_409(t *testing.T) {
+	blocking := newBlockingRunner()
+	defer blocking.releaseNow()
+	srv := newServer(t, blocking, nil)
+
+	// 第一个请求启动并阻塞。
+	first := httptest.NewRequest(http.MethodPost, "/api/agent/message",
+		strings.NewReader(`{"prompt":"x","session_id":"abc"}`))
+	first.Header.Set("Authorization", "Bearer secret-token")
+	firstRec := httptest.NewRecorder()
+	go srv.Handler().ServeHTTP(firstRec, first)
+
+	// 等待第一个请求到达 runner。
+	blocking.waitEntered()
+
+	// 同一会话上的第二个请求 → 409。
+	second := httptest.NewRequest(http.MethodPost, "/api/agent/message",
+		strings.NewReader(`{"prompt":"y","session_id":"abc"}`))
+	second.Header.Set("Authorization", "Bearer secret-token")
+	secondRec := do(t, srv, second)
+	if secondRec.Code != http.StatusConflict {
+		t.Errorf("second status = %d, want 409", secondRec.Code)
+	}
+}

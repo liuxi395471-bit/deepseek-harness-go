@@ -108,7 +108,7 @@ func (t *Tracker) snapshotLocked() Snapshot {
 
 // ComputeCost 返回给定 delta 在指定模型名下的费用（美元）。
 // 若模型未知则返回 0 —— 策略是对未知模型绝不报错
-// （DESIGN-v2 §A.4.2）。
+// （ARCHITECTURE.md §5.1）。
 //
 // 公式：cost = (completion_tokens / 1000) * price
 //

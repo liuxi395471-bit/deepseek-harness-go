@@ -1,12 +1,12 @@
-// Package sandbox 实现 DESIGN-v3 §F：OS 级子进程沙箱。
+// Package sandbox 实现 ARCHITECTURE.md §12：OS 级子进程沙箱。
 //
-// Sandbox 在 shell 工具执行前对 *exec.Cmd 应用 OS 约束（§F.4）。
+// Sandbox 在 shell 工具执行前对 *exec.Cmd 应用 OS 约束（ARCHITECTURE.md §12）。
 // 平台实现用 build tag 隔离：
 //
 //	windows_acl.go  //go:build windows   — 受限令牌 + 敏感路径拒绝
 //	linux_ns.go     //go:build linux     — namespaces（user/mount/pid）
 //
-// 默认 NoopSandbox 与 v2 行为一致（§F.5）。
+// 默认 NoopSandbox 与 v2 行为一致（ARCHITECTURE.md §12）。
 package sandbox
 
 import (
@@ -18,7 +18,7 @@ import (
 	"strings"
 )
 
-// Sandbox 是平台沙箱契约（§F.1）。
+// Sandbox 是平台沙箱契约（ARCHITECTURE.md §12）。
 type Sandbox interface {
 	Name() string
 	// Apply 在 cmd.Start 之前设置 cmd.SysProcAttr 等 OS 约束。
@@ -48,7 +48,7 @@ func (NoopSandbox) Apply(context.Context, *exec.Cmd) error { return nil }
 // Validate 不做任何事。
 func (NoopSandbox) Validate(string) error { return nil }
 
-// New 按 provider 构造沙箱（§F.4）。"auto" 按编译目标平台选择
+// New 按 provider 构造沙箱（ARCHITECTURE.md §12）。"auto" 按编译目标平台选择
 // windows_acl / linux_ns；未知 provider 返回错误。
 func New(provider string) (Sandbox, error) {
 	switch provider {

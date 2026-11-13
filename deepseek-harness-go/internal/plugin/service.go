@@ -1,10 +1,12 @@
-// Package plugin —— 内置插件服务器脚手架（DESIGN-v2 §B.3）。
+// Package plugin —— 内置插件服务器脚手架（ARCHITECTURE.md §14）。
 //
-// 内置插件以子命令的形式存在于 dsh 二进制中，在 exec 进入 gRPC
-// 服务循环之前，通过 NewServer().Main() 注册其工具。示例：
+// 插件以独立可执行文件的形式存在，在进入 gRPC 服务循环之前，
+// 先把自己的工具注册进一个 tool.Registry。例如一个 echo 插件：
 //
-//	cmd/plugin-echo/main.go 使用 plugin.NewServer() 注册一个
-//	echo 工具，然后调用 ServeForever()。
+//	reg := tool.NewRegistry()
+//	reg.MustRegister(&echoTool{})
+//	srv := plugin.NewServer(reg)
+//	srv.ServeForever(ctx, os.Getenv("DSH_PLUGIN_ADDR"))
 //
 // Server 将 tool.Registry 包装为 gRPC ToolProvider 契约，
 // 使插件作者不必编写 protobuf 胶水代码。

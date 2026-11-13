@@ -1,6 +1,6 @@
-// Package plugin 实现工具插件宿主（DESIGN-v2 S-B.2）。
+// Package plugin 实现工具插件宿主（ARCHITECTURE.md §14）。
 //
-// v2 使用 gRPC 进行进程间通信。宿主充当 gRPC 客户端连接到插件进程；
+// 使用 gRPC 进行进程间通信。宿主充当 gRPC 客户端连接到插件进程；
 // 每个插件通过 ToolService 注册其工具。崩溃的插件会被自动重启，
 // 最多 MaxRestarts 次。
 package plugin

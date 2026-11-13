@@ -52,7 +52,7 @@ type LLMConfig struct {
 	Timeout  time.Duration `yaml:"timeout"    env:"DEEPSEEK_TIMEOUT"`
 }
 
-// ObsConfig 控制 internal/obs 的实现选择（DESIGN-v3 §C.4）。
+// ObsConfig 控制 internal/obs 的实现选择（ARCHITECTURE.md §11）。
 type ObsConfig struct {
 	Provider string  `yaml:"provider"     env:"DSH_OBS_PROVIDER"` // noop | otel
 	Endpoint string  `yaml:"endpoint"     env:"DSH_OBS_OTEL_ENDPOINT"`
@@ -60,12 +60,12 @@ type ObsConfig struct {
 	SampleRatio float64 `yaml:"sample-ratio" env:"DSH_OBS_OTEL_SAMPLE_RATIO"`
 }
 
-// SkillsConfig 是 skill 系统（DESIGN-v3 §A）的配置。
+// SkillsConfig 是 skill 系统（ARCHITECTURE.md §9）的配置。
 type SkillsConfig struct {
 	Dir string `yaml:"dir" env:"DSH_SKILLS_DIR"` // 默认 ~/.dsh/skills
 }
 
-// CompactionConfig 是上下文压缩（DESIGN-v3 §D.4）的配置。
+// CompactionConfig 是上下文压缩（ARCHITECTURE.md §10）的配置。
 type CompactionConfig struct {
 	Enabled       bool   `yaml:"enabled"        env:"DSH_COMPACTION_ENABLED"`
 	TriggerTokens int    `yaml:"trigger-tokens" env:"DSH_COMPACTION_TRIGGER_TOKENS"`
@@ -73,13 +73,13 @@ type CompactionConfig struct {
 	KeepRecent    int    `yaml:"keep-recent"    env:"DSH_COMPACTION_KEEP_RECENT"`
 }
 
-// AuditConfig 是审计日志（DESIGN-v3 §E）的配置。
+// AuditConfig 是审计日志（ARCHITECTURE.md §11）的配置。
 type AuditConfig struct {
 	Path  string `yaml:"path"  env:"DSH_AUDIT_PATH"`  // 空表示关闭
 	Full  bool   `yaml:"full"  env:"DSH_AUDIT_FULL"`  // true 记录 args 原文
 }
 
-// SandboxConfig 是 OS sandbox（DESIGN-v3 §F）的配置。
+// SandboxConfig 是 OS sandbox（ARCHITECTURE.md §12）的配置。
 type SandboxConfig struct {
 	Provider string `yaml:"provider" env:"DSH_SANDBOX_PROVIDER"` // noop | windows_acl | linux_ns | auto
 }

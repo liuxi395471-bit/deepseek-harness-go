@@ -1,4 +1,4 @@
-// Package anthropic 实现 Anthropic Messages API 客户端（DESIGN-v2 SD.4）。
+// Package anthropic 实现 Anthropic Messages API 客户端（ARCHITECTURE.md §6）。
 //
 // 与 OpenAI 兼容客户端不同，Anthropic 使用不同的线上格式
 // （"messages" 端点），其流式事件也采用不同的 SSE 形状。
@@ -74,7 +74,7 @@ func (c *Client) Chat(ctx context.Context, req llm.ChatRequest) (llm.ChatRespons
 }
 
 // ChatStream 在 Anthropic Messages API 之上实现 SSE 流式
-// （DESIGN-v2 §D.4）。它会响应 ctx 取消，通过 errCh 上报致命的
+// （ARCHITECTURE.md §6）。它会响应 ctx 取消，通过 errCh 上报致命的
 // 传输错误，并为每个 content_block_delta 发出一个 llm.StreamChunk。
 // 当 message_delta 到达时，最后一个 chunk 会设置 Finish="stop"
 // （或 "tool_use"）。

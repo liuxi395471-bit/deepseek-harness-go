@@ -131,7 +131,7 @@ type Client interface {
 
 // StreamChunk 是流式聊天补全中一个已解码的帧。
 //
-// DESIGN-v2 §A.1.2：调用方只会收到已解码的 delta 值；线上
+// ARCHITECTURE.md §6：调用方只会收到已解码的 delta 值；线上
 // 格式（OpenAI choices[].delta）在 llm/sse_feed.go 中处理。
 //
 // 字段语义：
@@ -163,6 +163,9 @@ type SSEFrame struct {
 		Delta        SSEDelta `json:"delta"`
 		FinishReason string   `json:"finish_reason"`
 	} `json:"choices"`
+	// Usage 出现在终止帧上（OpenAI 兼容协议把 usage 放在最后一个
+	// chunk 的顶层，与 choices 平级）。中间帧上为 nil。
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // SSEDelta 是每帧的增量载荷：部分文本和/或部分
@@ -281,7 +284,7 @@ func (c *OpenAICompatibleClient) ChatStream(ctx context.Context, req ChatRequest
 		var lastErr error
 		for attempt := 0; attempt < 2; attempt++ {
 			if attempt > 0 {
-				// 按 DESIGN-v2 §A.1.4 退避 200 ms。
+				// 按 ARCHITECTURE.md §6 退避 200 ms。
 				select {
 				case <-ctx.Done():
 					return

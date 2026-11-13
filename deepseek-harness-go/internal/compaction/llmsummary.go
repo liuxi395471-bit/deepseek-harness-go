@@ -9,7 +9,7 @@ import (
 )
 
 // LLMSummaryStrategy 用同一个 LLM client 把被丢弃的部分总结为一段
-// 摘要并插回原位（§D.3）。不引入新模型。
+// 摘要并插回原位（ARCHITECTURE.md §10）。不引入新模型。
 type LLMSummaryStrategy struct {
 	Client     llm.Client
 	Model      string

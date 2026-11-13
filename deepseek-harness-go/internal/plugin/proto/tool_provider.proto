@@ -1,4 +1,4 @@
-// DeepSeek Harness Go plugin protocol (DESIGN-v2 §B.2).
+// DeepSeek Harness Go plugin protocol (ARCHITECTURE.md §14).
 //
 // A plugin is an external process speaking this gRPC contract on
 // localhost. The host (dsh main) launches the plugin, calls Specs() to

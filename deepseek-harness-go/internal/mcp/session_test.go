@@ -1,4 +1,4 @@
-// 高层 MCP Session 的测试（DESIGN-v2 §D.1）。
+// 高层 MCP Session 的测试（ARCHITECTURE.md §15）。
 //
 // 策略：在一个 goroutine 中搭建假 MCP 服务器，通过 io.Pipe
 // 连接到真实的 Session。假服务器从管道一端读取请求，查找方法，

@@ -1,8 +1,8 @@
-// Package compaction 实现 DESIGN-v3 §D：长会话上下文压缩。
+// Package compaction 实现 ARCHITECTURE.md §10：长会话上下文压缩。
 //
 // Compactor 在 message 总 token 估算超过 Trigger 时调用 Strategy，
 // 把历史压缩到 target 附近；system 消息与最近 KeepRecent 条消息
-// 永远保留（§D.5 验收）。
+// 永远保留（ARCHITECTURE.md §10 验收）。
 package compaction
 
 import (
@@ -11,7 +11,7 @@ import (
 	"deepseek-harness-go/internal/llm"
 )
 
-// Strategy 是压缩策略契约（§D.1）。
+// Strategy 是压缩策略契约（ARCHITECTURE.md §10）。
 type Strategy interface {
 	Name() string
 	// Compact 把 msgs 压缩到约 target token 估算值以内。
@@ -21,7 +21,7 @@ type Strategy interface {
 	Compact(ctx context.Context, msgs []llm.Message, target int) ([]llm.Message, error)
 }
 
-// EstimateTokens 用纯字符估算 token 数（§D.5："tiktoken-go 或纯字符
+// EstimateTokens 用纯字符估算 token 数（ARCHITECTURE.md §10："tiktoken-go 或纯字符
 // 估算"）。取保守估算：每 3 个 rune 记 1 token，最低每条消息 1 token。
 // tool_calls 的 name + arguments 也计入。
 func EstimateTokens(msgs []llm.Message) int {
