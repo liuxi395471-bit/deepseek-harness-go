@@ -59,11 +59,11 @@ import (
 )
 
 var (
-	configPath = flag.String("config", "harness.yml", "path to harness.yml (empty for defaults + env only)")
-	prompt     = flag.String("prompt", "", "if non-empty, run a single prompt and exit (no REPL)")
-	serveFlag  = flag.Bool("serve", false, "start HTTP+SSE server (ARCHITECTURE.md §13) instead of REPL; cfg.server.enabled must be true")
-	debug      = flag.Bool("debug", false, "print all agent events to stderr")
-	auditPath  = flag.String("audit", "", "path to audit.jsonl (ARCHITECTURE.md §11); overrides cfg.audit.path. Empty disables auditing.")
+	configPath = flag.String("config", "harness.yml", "harness.yml 的路径（留空则只用默认值 + 环境变量）")
+	prompt     = flag.String("prompt", "", "非空时只执行这一条 prompt 后退出（不进入 REPL）")
+	serveFlag  = flag.Bool("serve", false, "启动 HTTP+SSE 服务（ARCHITECTURE.md §13）而不是 REPL；要求 cfg.server.enabled=true")
+	debug      = flag.Bool("debug", false, "把所有 agent 事件打印到 stderr")
+	auditPath  = flag.String("audit", "", "audit.jsonl 的路径（ARCHITECTURE.md §11）；优先于 cfg.audit.path，留空则关闭审计")
 
 	// --plugin 可重复使用：每次出现追加一个路径。flag.StringVar 做不到
 	// 这一点，因此我们注册一个自定义函数来向 plugins 追加。
@@ -81,7 +81,7 @@ func (p *pluginPaths) Set(v string) error {
 }
 
 func init() {
-	flag.Var(&plugins, "plugin", "path to plugin executable (ARCHITECTURE.md §14); repeatable. Spawns a child gRPC server per occurrence and merges its tools into the registry.")
+	flag.Var(&plugins, "plugin", "插件可执行文件路径（ARCHITECTURE.md §14）；可重复。每出现一次就拉起一个 gRPC 子进程，并把它的工具合并进注册表。")
 }
 
 // version 在发布时通过 -ldflags 注入。默认值让它在开发构建中
@@ -89,6 +89,14 @@ func init() {
 var version = "3.0.0-dev"
 
 func main() {
+	// flag.Parse() 解析命令行参数，把上面用 flag.String / flag.Bool /
+	// flag.Var 注册的 -config、-prompt、-serve、-debug、-audit、-plugin
+	// 写进各自的变量里。此后所有代码都通过解引用（如 *configPath、
+	// *serveFlag）读取解析结果。
+	//
+	// 它必须出现在读取这些变量的任何代码之前，所以放在 main 的第一行。
+	// 出错行为：遇到未定义的参数会打印用法并以退出码 2 退出；
+	// -h / --help 则打印用法后以退出码 0 退出。
 	flag.Parse()
 
 	// rootCtx 是长期存活的 context。SIGINT/SIGTERM 会取消它；
@@ -287,7 +295,7 @@ func setupObs(ctx context.Context, cfg config.Config, debug bool) (obs.Provider,
 	if err != nil {
 		log.Fatalf("[dsh] obs otel: %v", err)
 	}
-		log.Printf("[dsh] obs: otel endpoint=%s service=%s", cfg.Obs.Endpoint, cfg.Obs.ServiceName)
+	log.Printf("[dsh] obs: otel endpoint=%s service=%s", cfg.Obs.Endpoint, cfg.Obs.ServiceName)
 	p.Tracer = handle
 	p.Meter = handle.Meter()
 	return p, handle

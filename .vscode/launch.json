@@ -1,24 +1,52 @@
 {
+  // dsh 调试启动配置。
+  // Go 模块根 = ${workspaceFolder}/deepseek-harness-go（只有一层），
+  // 因此 program 指向 .../deepseek-harness-go/cmd/dsh，cwd 指向模块根。
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "dsh-go: 调试 main",
+      "name": "dsh REPL (dlv)",
       "type": "go",
       "request": "launch",
       "mode": "debug",
-      "program": "${workspaceFolder}/deepseek-harness-go/cmd/dsh/main.go",
+      "program": "${workspaceFolder}/deepseek-harness-go/cmd/dsh",
       "cwd": "${workspaceFolder}/deepseek-harness-go",
-      "env": {
-        "DSH_API_KEY": "${env:DSH_API_KEY}",
-        "DSH_BASE_URL": "${env:DSH_BASE_URL}",
-        "DSH_MODEL": "${env:DSH_MODEL}"
-      },
+      "args": ["-config", "./harness.yml", "-debug"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "dsh -prompt (dlv)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/deepseek-harness-go/cmd/dsh",
+      "cwd": "${workspaceFolder}/deepseek-harness-go",
       "args": [
-        "-config=harness.yml",
-        "-debug"
+        "-config", "./harness.yml",
+        "-debug",
+        "-prompt", "请使用 greet 工具向 Ada 打招呼"
       ],
       "console": "integratedTerminal"
     },
-
+    {
+      "name": "dsh -serve (dlv)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/deepseek-harness-go/cmd/dsh",
+      "cwd": "${workspaceFolder}/deepseek-harness-go",
+      "args": ["-config", "./harness.yml", "-serve", "-debug"],
+      "env": { "DSH_SERVER_AUTH_TOKEN": "dev-token" },
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "attach: dlv headless :2345",
+      "type": "go",
+      "request": "attach",
+      "mode": "remote",
+      "port": 2345,
+      "host": "127.0.0.1",
+      "cwd": "${workspaceFolder}/deepseek-harness-go"
+    }
   ]
 }
